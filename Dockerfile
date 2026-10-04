@@ -50,12 +50,24 @@ RUN apt-get update \
 ENV NODE_ENV=production \
     COMPILE_DIR=/var/lib/openleaf/compiles
 
+# Let XeLaTeX and LuaLaTeX find TeX Live's OpenType fonts by name as well.
+RUN if [ -f /etc/fonts/conf.avail/09-texlive-fonts.conf ]; then \
+      ln -sf /etc/fonts/conf.avail/09-texlive-fonts.conf /etc/fonts/conf.d/09-texlive-fonts.conf; \
+    fi \
+ && fc-cache -fs
+
+# Never run the API (or LaTeX) as root.
+USER node
+
+# Compile a test document with every engine: fails the build if TeX is broken,
+# and leaves warm font caches behind for fast first compiles.
+COPY --chown=node:node docker/warmup.sh /usr/local/bin/openleaf-warmup
+RUN sh /usr/local/bin/openleaf-warmup
+
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 
-# Never run the API (or LaTeX) as root.
-USER node
 EXPOSE 10000
 CMD ["node", "dist/server.js"]

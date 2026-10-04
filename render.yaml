@@ -1,0 +1,39 @@
+# Render Blueprint: recreates the whole OpenLeaf back end (database + API) in one go.
+# Dashboard -> New -> Blueprint -> pick this repository.
+#
+# Plans: `free` works but has limits worth knowing about —
+#   * the free database is deleted 30 days after creation unless upgraded;
+#   * the free web service sleeps after 15 idle minutes and has 0.1 CPU / 512 MB.
+# Change the two `plan:` lines to upgrade.
+
+databases:
+  - name: openleaf-db
+    plan: free
+    region: frankfurt
+    databaseName: openleaf
+    user: openleaf
+
+services:
+  - type: web
+    name: openleaf-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: openleaf-db
+          property: connectionString
+      # Whoever knows this code can create an account. Read it in the dashboard after the first deploy.
+      - key: INVITE_CODE
+        generateValue: true
+      - key: REGISTRATION
+        value: invite
+      - key: DEFAULT_ENGINE
+        value: pdflatex
+      # The free plan's CPU is slow; allow compiles a generous time limit.
+      - key: COMPILE_TIMEOUT_MS
+        value: "240000"

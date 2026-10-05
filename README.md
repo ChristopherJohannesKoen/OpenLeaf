@@ -174,7 +174,13 @@ The API and the site are two services. The site is built with
 `VITE_API_URL` set to the API's address, and the API's `CORS_ORIGINS` is set to
 the site's address, so only that site may call it from a browser. If either
 address changes (a custom domain, a renamed service), change the matching
-variable and redeploy. Pushing to `main` redeploys both.
+variable and redeploy.
+
+Both services are set to deploy on every push to `main`, but Render only hears
+about a push once the Render account is connected to GitHub with access to this
+repository (Render → Account settings → Git providers). Until then, deploy by
+hand after a push: **Manual Deploy → Deploy latest commit** on each service.
+A private repository needs the same connection before Render can read it at all.
 
 Things to know about Render's free plans:
 

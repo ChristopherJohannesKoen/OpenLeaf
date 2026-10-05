@@ -114,8 +114,9 @@ Things worth knowing before changing it:
 
 ## Hosting it
 
-The hosted copy is a Render static site, https://openleaf-cw3y.onrender.com, rebuilt on every push
-to `main` with `cd web && npm ci && npm run build`. It is built with
+The hosted copy is a Render static site, https://openleaf-cw3y.onrender.com, built from `main`
+with `cd web && npm ci && npm run build` (see "Deploying on Render" in the README above for when
+a push redeploys by itself). It is built with
 `VITE_API_URL=https://openleaf-api.onrender.com`, and the API's `CORS_ORIGINS` names the site, so
 the browser calls the API directly. Both are set in `render.yaml` (and in the Render dashboard).
 

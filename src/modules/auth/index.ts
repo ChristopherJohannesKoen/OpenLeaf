@@ -5,6 +5,7 @@ import type { OpenLeafModule } from '../../core/modules.js';
 import type { Queryable } from '../../core/db.js';
 import { badRequest, conflict, forbidden, notFound, unauthorized } from '../../core/errors.js';
 import { currentUser, secured, Uuid, type AuthUser } from '../../core/http.js';
+import { firebaseVerifier } from './firebase.js';
 import { hashPassword, hashToken, newToken, safeEqual, verifyPassword } from './passwords.js';
 
 const TAG = 'Accounts';
@@ -12,7 +13,9 @@ const TAG = 'Accounts';
 interface UserRow {
   id: string;
   email: string;
-  password_hash: string;
+  /** Null for an account that signs in through Firebase: OpenLeaf holds no password for it. */
+  password_hash: string | null;
+  firebase_uid: string | null;
   display_name: string;
   role: 'owner' | 'member';
   created_at: Date;
@@ -89,6 +92,14 @@ export const authModule: OpenLeafModule = {
         CREATE INDEX auth_tokens_user_idx ON auth_tokens (user_id);
       `,
     },
+    {
+      // Accounts that sign in through Firebase Authentication have no password here at all.
+      id: '002_firebase_identity',
+      sql: `
+        ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+        ALTER TABLE users ADD COLUMN firebase_uid text UNIQUE;
+      `,
+    },
   ],
 
   register(root, { db, config, events }) {
@@ -156,7 +167,58 @@ export const authModule: OpenLeafModule = {
       const mode = config.registration;
       const open =
         mode === 'open' || mode === 'invite' || (mode === 'first-user' && !hasUsers);
-      return { mode, open, requiresInviteCode: mode === 'invite', hasUsers };
+      return {
+        mode,
+        open,
+        requiresInviteCode: mode === 'invite',
+        hasUsers,
+        // How people prove who they are here, and what the front end needs to start that.
+        provider: config.authProvider,
+        ...(config.firebase
+          ? {
+              firebase: {
+                apiKey: config.firebase.apiKey,
+                authDomain: config.firebase.authDomain,
+                projectId: config.firebase.projectId,
+                signInProviders: config.firebase.signInProviders,
+              },
+            }
+          : {}),
+      };
+    }
+
+    const verifyIdToken = config.firebase ? firebaseVerifier(config.firebase) : null;
+    const passwordsOff = () =>
+      forbidden('This OpenLeaf instance signs people in with Google, not with a password.', 'password_sign_in_disabled');
+
+    /**
+     * Refuses unless a new account may be made right now. Call inside the registration lock.
+     * A missing invite code (`invite_required`) is told apart from a wrong one, so that a
+     * front end can ask for the code only once it knows the account is new.
+     */
+    function admit(hasUsers: boolean, inviteCode: string | undefined): void {
+      switch (config.registration) {
+        case 'closed':
+          throw forbidden('Registration is closed on this OpenLeaf instance.', 'registration_closed');
+        case 'first-user':
+          if (hasUsers) {
+            throw forbidden(
+              'This OpenLeaf instance already has its owner; registration is closed.',
+              'registration_closed',
+            );
+          }
+          break;
+        case 'invite':
+          if (!inviteCode) {
+            throw forbidden('A new account needs the invite code.', 'invite_required');
+          }
+          if (!safeEqual(inviteCode, config.inviteCode!)) {
+            throw forbidden('That invite code is not valid.', 'invalid_invite_code');
+          }
+          break;
+        case 'open':
+          break;
+      }
     }
 
     app.get(
@@ -186,6 +248,7 @@ export const authModule: OpenLeafModule = {
         },
       },
       async (req, reply) => {
+        if (config.authProvider !== 'local') throw passwordsOff();
         const email = cleanEmail(req.body.email);
         checkPassword(req.body.password);
         const passwordHash = await hashPassword(req.body.password);
@@ -196,24 +259,14 @@ export const authModule: OpenLeafModule = {
           const count = await q.query<{ n: number }>('SELECT count(*)::int AS n FROM users');
           const hasUsers = count.rows[0]!.n > 0;
 
-          switch (config.registration) {
-            case 'closed':
-              throw forbidden('Registration is closed on this OpenLeaf instance.', 'registration_closed');
-            case 'first-user':
-              if (hasUsers) {
-                throw forbidden(
-                  'This OpenLeaf instance already has its owner; registration is closed.',
-                  'registration_closed',
-                );
-              }
-              break;
-            case 'invite':
-              if (!req.body.inviteCode || !safeEqual(req.body.inviteCode, config.inviteCode!)) {
-                throw forbidden('That invite code is not valid.', 'invalid_invite_code');
-              }
-              break;
-            case 'open':
-              break;
+          try {
+            admit(hasUsers, req.body.inviteCode);
+          } catch (err) {
+            // With a password there is one form, so a missing code is simply a wrong one.
+            if ((err as { code?: string }).code === 'invite_required') {
+              throw forbidden('That invite code is not valid.', 'invalid_invite_code');
+            }
+            throw err;
           }
 
           const existing = await q.query('SELECT 1 FROM users WHERE email = $1', [email]);
@@ -250,16 +303,86 @@ export const authModule: OpenLeafModule = {
         },
       },
       async (req) => {
+        if (config.authProvider !== 'local') throw passwordsOff();
         const email = req.body.email.trim().toLowerCase();
         const res = await db.query<UserRow>('SELECT * FROM users WHERE email = $1', [email]);
         const user = res.rows[0];
         // Always do the hashing work, so response time does not reveal whether the email exists.
-        const ok = user
+        const ok = user?.password_hash
           ? await verifyPassword(req.body.password, user.password_hash)
           : (await hashPassword(req.body.password), false);
         if (!user || !ok) throw unauthorized('Wrong email or password.', 'invalid_credentials');
         const session = await issueSession(db, user.id, config.sessionTtlDays);
         return { user: publicUser(user), ...session };
+      },
+    );
+
+    app.post(
+      '/api/auth/firebase',
+      {
+        config: authLimit,
+        schema: {
+          tags: [TAG],
+          summary: 'Sign in with a Firebase ID token (for example after "Continue with Google")',
+          description:
+            'Only on an instance with `AUTH_PROVIDER=firebase`. The first time an account signs in it is ' +
+            'created, subject to the same rules as registration: on an invite-only instance send `inviteCode` ' +
+            '(a 403 `invite_required` asks for it). Returns an OpenLeaf session token, as `login` does.',
+          body: Type.Object({
+            idToken: Type.String({ minLength: 1, maxLength: 8192 }),
+            inviteCode: Type.Optional(Type.String({ maxLength: 512 })),
+          }),
+        },
+      },
+      async (req, reply) => {
+        if (!verifyIdToken) {
+          throw forbidden('This OpenLeaf instance does not sign people in through Firebase.', 'firebase_sign_in_disabled');
+        }
+        const identity = await verifyIdToken(req.body.idToken);
+
+        const result = await db.tx(async (q) => {
+          await q.query('SELECT pg_advisory_xact_lock(7302412)');
+
+          const known = await q.query<UserRow>('SELECT * FROM users WHERE firebase_uid = $1', [identity.uid]);
+          if (known.rows[0]) {
+            return { user: known.rows[0], created: false, session: await issueSession(q, known.rows[0].id, config.sessionTtlDays) };
+          }
+
+          // An account made earlier with a password, now signing in with the same (verified) address.
+          const byEmail = await q.query<UserRow>('SELECT * FROM users WHERE email = $1', [identity.email]);
+          if (byEmail.rows[0]) {
+            if (byEmail.rows[0].firebase_uid) {
+              throw conflict('Another account already uses that email address.', 'email_taken');
+            }
+            const linked = await q.query<UserRow>(
+              'UPDATE users SET firebase_uid = $2, password_hash = NULL, updated_at = now() WHERE id = $1 RETURNING *',
+              [byEmail.rows[0].id, identity.uid],
+            );
+            return { user: linked.rows[0]!, created: false, session: await issueSession(q, linked.rows[0]!.id, config.sessionTtlDays) };
+          }
+
+          const count = await q.query<{ n: number }>('SELECT count(*)::int AS n FROM users');
+          const hasUsers = count.rows[0]!.n > 0;
+          admit(hasUsers, req.body.inviteCode?.trim() || undefined);
+
+          const inserted = await q.query<UserRow>(
+            `INSERT INTO users (email, firebase_uid, display_name, role)
+             VALUES ($1, $2, $3, $4) RETURNING *`,
+            [identity.email, identity.uid, identity.name, hasUsers ? 'member' : 'owner'],
+          );
+          const user = inserted.rows[0]!;
+          return { user, created: true, session: await issueSession(q, user.id, config.sessionTtlDays) };
+        });
+
+        if (result.created) {
+          events.emit('user.registered', {
+            userId: result.user.id,
+            email: result.user.email,
+            role: result.user.role,
+          });
+          reply.code(201);
+        }
+        return { user: publicUser(result.user), ...result.session };
       },
     );
 
@@ -300,6 +423,9 @@ export const authModule: OpenLeafModule = {
       },
       async (req) => {
         const user = currentUser(req);
+        if (req.body.email !== undefined && config.authProvider !== 'local') {
+          throw forbidden('The email address comes from the account you sign in with, so it is changed there.', 'email_from_provider');
+        }
         const email = req.body.email !== undefined ? cleanEmail(req.body.email) : null;
         if (email) {
           const clash = await db.query('SELECT 1 FROM users WHERE email = $1 AND id <> $2', [email, user.id]);
@@ -330,9 +456,11 @@ export const authModule: OpenLeafModule = {
         },
       },
       async (req, reply) => {
+        if (config.authProvider !== 'local') throw passwordsOff();
         const user = currentUser(req);
         const res = await db.query<UserRow>('SELECT * FROM users WHERE id = $1', [user.id]);
-        if (!(await verifyPassword(req.body.currentPassword, res.rows[0]!.password_hash))) {
+        const stored = res.rows[0]!.password_hash;
+        if (!stored || !(await verifyPassword(req.body.currentPassword, stored))) {
           throw unauthorized('Your current password is not correct.', 'invalid_credentials');
         }
         checkPassword(req.body.newPassword);

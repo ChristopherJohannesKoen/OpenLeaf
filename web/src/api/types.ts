@@ -19,6 +19,10 @@ export interface Registration {
   open: boolean;
   requiresInviteCode: boolean;
   hasUsers: boolean;
+  /** Who checks who you are: the service itself (a password), or Firebase (a Google account). */
+  provider?: 'local' | 'firebase';
+  /** With `provider: 'firebase'`: what the browser needs to open Google's window. None of it is secret. */
+  firebase?: { apiKey: string; authDomain: string; projectId: string; signInProviders: string[] };
 }
 
 export interface EngineStatus {
@@ -195,6 +199,8 @@ export interface Api {
   registration(): Promise<Registration>;
   register(input: { email: string; password: string; displayName?: string; inviteCode?: string }): Promise<Session>;
   login(email: string, password: string): Promise<Session>;
+  /** Trade a Firebase ID token for a session. A new account on an invite-only service needs `inviteCode`. */
+  firebaseSignIn(idToken: string, inviteCode?: string): Promise<Session>;
   logout(): Promise<void>;
   me(): Promise<User>;
 

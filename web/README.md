@@ -45,7 +45,7 @@ Other commands:
 
 | screen | what it does |
 | --- | --- |
-| Sign in | Signs in, or creates an account when the service allows it (with the invite code if it asks for one). |
+| Sign in | Signs in the way the service says it does: with **Continue with Google** when the service uses Firebase Authentication (it then keeps no password), otherwise with an email and password. A new account is asked for the invite code if the service wants one. |
 | Library | Every project with the state of its last compile, its page count and its last note. New project (blank or from a template), import a zip, rename, duplicate, download, archive, trash, delete for good. |
 | Workspace | The editor. See below. |
 | Modules | Which panes are out, the scholia margin, compile-after-save, the theme (Daylight, Lamplight, or follow the computer), the service's address and engines, a backup of everything, sign out. |
@@ -109,6 +109,9 @@ Things worth knowing before changing it:
 - **Preferences** (panes, theme, compile-after-save) are kept with the account under `openleaf` in
   the service's free-form settings, and mirrored in the browser's local storage.
 - **The session token** is kept in the browser's local storage until you sign out.
+- **Google sign-in** is in `src/lib/google.ts`, loaded only when the service asks for it. Firebase's own
+  sign-in is held in memory and dropped once its token has been handed to the service, so the only
+  thing kept in the browser is OpenLeaf's session token.
 - **Widths.** The source column is a measure (gutter, 80 columns, margin: 950px). When the window
   cannot hold that and a usable proof, the margin narrows, then goes, and only then do the columns.
 

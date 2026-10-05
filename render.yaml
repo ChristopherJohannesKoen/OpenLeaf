@@ -47,6 +47,15 @@ services:
       # The free plan's CPU is slow; allow compiles a generous time limit.
       - key: COMPILE_TIMEOUT_MS
         value: "240000"
+      # Sign-in with Google through Firebase Authentication; OpenLeaf then keeps no password.
+      # Remove these three for OpenLeaf's own email-and-password sign-in. The project id and
+      # the web API key come from the Firebase project's web app settings; neither is a secret.
+      - key: AUTH_PROVIDER
+        value: firebase
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_API_KEY
+        sync: false
       # Which web pages may call the API from a browser: the front end below.
       - key: CORS_ORIGINS
         value: https://openleaf-cw3y.onrender.com

@@ -85,6 +85,9 @@ export class HttpApi implements Api {
     return this.json<Session>('POST', '/api/auth/register', { json: input });
   }
   login(email: string, password: string) { return this.json<Session>('POST', '/api/auth/login', { json: { email, password } }); }
+  firebaseSignIn(idToken: string, inviteCode?: string) {
+    return this.json<Session>('POST', '/api/auth/firebase', { json: { idToken, inviteCode } });
+  }
   async logout() { await this.json<void>('POST', '/api/auth/logout'); }
   async me() { return (await this.json<{ user: User }>('GET', '/api/auth/me')).user; }
 

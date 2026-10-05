@@ -139,6 +139,7 @@ button.ol-siglum--off:hover { border-style: solid; }
 .ol-signin__hint { margin-top: var(--space-quarter); color: var(--ink-2); max-width: var(--measure-prose); }
 .ol-signin__form { display: grid; gap: var(--space-line); max-width: 360px; margin-top: var(--space-2line); }
 .ol-signin__actions { display: flex; align-items: center; gap: var(--space-3q); }
+.ol-signin__who { color: var(--ink-2); }
 .ol-signin__sample { display: grid; gap: var(--space-half); justify-items: start; max-width: 360px; margin-top: var(--space-3line); padding-top: var(--space-line); border-top: 1px solid var(--rule); color: var(--ink-2); }
 .ol-signin__art { position: relative; overflow: hidden; border-left: 1px solid var(--rule); }
 .ol-coverart { position: absolute; inset: 0; width: 100%; height: 100%; }

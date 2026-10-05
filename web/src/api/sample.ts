@@ -132,6 +132,7 @@ export class SampleApi implements Api {
   async registration(): Promise<Registration> { return { mode: 'open', open: true, requiresInviteCode: false, hasUsers: true }; }
   async register(): Promise<Session> { return { user: USER, token: 'sample', expiresAt: null }; }
   async login(): Promise<Session> { return { user: USER, token: 'sample', expiresAt: null }; }
+  async firebaseSignIn(): Promise<Session> { return { user: USER, token: 'sample', expiresAt: null }; }
   async logout(): Promise<void> {}
   async me(): Promise<User> { return USER; }
 

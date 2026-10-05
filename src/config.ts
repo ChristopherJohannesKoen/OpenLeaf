@@ -3,6 +3,20 @@ import path from 'node:path';
 
 export type RegistrationMode = 'first-user' | 'invite' | 'open' | 'closed';
 
+/** Who checks that a person is who they say: OpenLeaf itself (passwords), or Firebase Authentication. */
+export type AuthProvider = 'local' | 'firebase';
+
+export interface FirebaseConfig {
+  projectId: string;
+  /** The Firebase web API key. It identifies the project to Google and is not a secret. */
+  apiKey: string;
+  authDomain: string;
+  /** Which Firebase sign-in methods are accepted, e.g. `google.com`. */
+  signInProviders: string[];
+  /** Where the keys that sign Firebase ID tokens are published. */
+  jwksUrl: string;
+}
+
 export interface Config {
   env: string;
   host: string;
@@ -17,6 +31,9 @@ export interface Config {
   registration: RegistrationMode;
   inviteCode: string | null;
   sessionTtlDays: number;
+  authProvider: AuthProvider;
+  /** Set when `authProvider` is `firebase`. */
+  firebase: FirebaseConfig | null;
 
   corsOrigins: string[] | '*';
   rateLimitPerMinute: number;
@@ -135,6 +152,33 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error('REGISTRATION=invite requires INVITE_CODE to be set.');
   }
 
+  const authProviderRaw = str(env, 'AUTH_PROVIDER', 'local')!.toLowerCase();
+  if (authProviderRaw !== 'local' && authProviderRaw !== 'firebase') {
+    throw new Error(`Invalid AUTH_PROVIDER "${authProviderRaw}" (use local or firebase).`);
+  }
+  const authProvider = authProviderRaw as AuthProvider;
+  let firebase: FirebaseConfig | null = null;
+  if (authProvider === 'firebase') {
+    const projectId = str(env, 'FIREBASE_PROJECT_ID');
+    const apiKey = str(env, 'FIREBASE_API_KEY');
+    if (!projectId || !apiKey) {
+      throw new Error('AUTH_PROVIDER=firebase requires FIREBASE_PROJECT_ID and FIREBASE_API_KEY to be set.');
+    }
+    const providers = list(env, 'FIREBASE_SIGN_IN_PROVIDERS');
+    firebase = {
+      projectId,
+      apiKey,
+      authDomain: str(env, 'FIREBASE_AUTH_DOMAIN', `${projectId}.firebaseapp.com`)!,
+      signInProviders: providers.length ? providers : ['google.com'],
+      // Overridden only by the tests and by the Firebase emulator.
+      jwksUrl: str(
+        env,
+        'FIREBASE_JWKS_URL',
+        'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com',
+      )!,
+    };
+  }
+
   const cors = str(env, 'CORS_ORIGINS', '*')!;
   const enabled = list(env, 'OPENLEAF_MODULES');
 
@@ -152,6 +196,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     registration,
     inviteCode,
     sessionTtlDays: int(env, 'SESSION_TTL_DAYS', 30),
+    authProvider,
+    firebase,
 
     corsOrigins: cors === '*' ? '*' : list(env, 'CORS_ORIGINS'),
     rateLimitPerMinute: int(env, 'RATE_LIMIT_PER_MINUTE', 600),

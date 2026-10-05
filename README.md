@@ -203,6 +203,8 @@ The ones you are most likely to touch:
 | `DATABASE_URL` | — | Postgres connection string (required) |
 | `REGISTRATION` | `first-user`, or `invite` if `INVITE_CODE` is set | Who may create accounts: `first-user`, `invite`, `open`, `closed` |
 | `INVITE_CODE` | — | Secret needed to register in `invite` mode |
+| `AUTH_PROVIDER` | `local` | `local`: OpenLeaf keeps a hashed password per account. `firebase`: people sign in with Google through Firebase Authentication and OpenLeaf keeps no password (see below) |
+| `FIREBASE_PROJECT_ID` / `FIREBASE_API_KEY` | — | The Firebase project and its web API key (required with `AUTH_PROVIDER=firebase`; neither is a secret) |
 | `CORS_ORIGINS` | `*` | Browser origins allowed to call the API |
 | `OPENLEAF_DISABLED_MODULES` | — | Comma-separated optional modules to switch off |
 | `DEFAULT_ENGINE` | `pdflatex` | Engine for new projects |
@@ -210,6 +212,31 @@ The ones you are most likely to touch:
 | `COMPILE_SHELL_ESCAPE` | `restricted` | `off`, `restricted` or `full` (needed by `minted`; trusted users only) |
 | `ALLOW_LATEXMKRC` | `false` | Honour a project's `latexmkrc` (it can run arbitrary code) |
 | `MAX_UPLOAD_BYTES` / `MAX_PROJECT_BYTES` | 25 MB / 150 MB | Size limits |
+
+### Signing in with Google (Firebase Authentication)
+
+With `AUTH_PROVIDER=firebase` the sign-in screen shows **Continue with Google**
+instead of an email and password form. Google's own window asks which account;
+Firebase hands the browser a short-lived token; `POST /api/auth/firebase` checks
+that token (signature by Google's published keys, issued for this project, a
+verified email address, a Google sign-in) and answers with an ordinary OpenLeaf
+session. So:
+
+- **OpenLeaf keeps no password.** `register`, `login` and change-password are
+  refused; the `users` table holds an email address and Firebase's id for the
+  account, nothing to steal a sign-in with.
+- **`REGISTRATION` and `INVITE_CODE` still decide who gets an account.** Anyone
+  can prove a Google account, so on an invite-only instance a Google account
+  that is new here is asked for the invite code once; after that it signs in
+  with one click. The first account made is the owner.
+- Scripts are unaffected: personal API tokens (`/api/auth/tokens`) work as before.
+
+To set it up: in the [Firebase console](https://console.firebase.google.com)
+create a project, switch on **Authentication → Sign-in method → Google**, add
+the front end's address under **Authentication → Settings → Authorised
+domains**, and register a web app to get the project id and API key. Then set
+`AUTH_PROVIDER`, `FIREBASE_PROJECT_ID` and `FIREBASE_API_KEY` on the API. The
+front end needs no setting of its own: it asks the API how to sign in.
 
 ## Customising
 

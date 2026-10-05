@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
+import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from 'jose';
 import { unzipSync, zipSync } from 'fflate';
 import { createTestApp, newProject, signUp, TINY_PNG, type TestApp } from './helpers.js';
 
@@ -14,7 +17,7 @@ describe('accounts', () => {
 
   it('reports that registration is open until the owner exists', async () => {
     const res = await t.api.get('/api/auth/registration');
-    assert.deepEqual(res.body, { mode: 'first-user', open: true, requiresInviteCode: false, hasUsers: false });
+    assert.deepEqual(res.body, { mode: 'first-user', open: true, requiresInviteCode: false, hasUsers: false, provider: 'local' });
   });
 
   it('rejects weak passwords and bad emails', async () => {
@@ -98,6 +101,156 @@ describe('accounts', () => {
   });
 });
 
+describe('sign-in through Firebase', () => {
+  const PROJECT = 'openleaf-test';
+  let t: TestApp;
+  let jwks: Server;
+  let key: CryptoKey;
+  let strangerKey: CryptoKey;
+
+  /** An ID token as Firebase would issue it after "Continue with Google", with any claim overridden. */
+  const idToken = (claims: Record<string, unknown> = {}, opts: { signWith?: CryptoKey; expiresIn?: string } = {}) => {
+    const now = Math.floor(Date.now() / 1000);
+    return new SignJWT({
+      name: 'Ada Lovelace',
+      email: 'ada@example.com',
+      email_verified: true,
+      auth_time: now - 5,
+      firebase: { identities: { 'google.com': ['1234'] }, sign_in_provider: 'google.com' },
+      ...claims,
+    })
+      .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
+      .setIssuer((claims.iss as string) ?? `https://securetoken.google.com/${PROJECT}`)
+      .setAudience((claims.aud as string) ?? PROJECT)
+      .setSubject((claims.sub as string) ?? 'uid-ada')
+      .setIssuedAt(now - 5)
+      .setExpirationTime(opts.expiresIn ?? '1h')
+      .sign(opts.signWith ?? key);
+  };
+
+  before(async () => {
+    const pair = await generateKeyPair('RS256');
+    key = pair.privateKey;
+    strangerKey = (await generateKeyPair('RS256')).privateKey;
+    const published = { keys: [{ ...(await exportJWK(pair.publicKey)), kid: 'test-key', alg: 'RS256', use: 'sig' }] };
+    jwks = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(published));
+    });
+    await new Promise<void>((resolve) => jwks.listen(0, '127.0.0.1', resolve));
+    const { port } = jwks.address() as AddressInfo;
+    t = await createTestApp({
+      AUTH_PROVIDER: 'firebase',
+      FIREBASE_PROJECT_ID: PROJECT,
+      FIREBASE_API_KEY: 'web-api-key',
+      FIREBASE_JWKS_URL: `http://127.0.0.1:${port}/jwks`,
+      REGISTRATION: 'invite',
+      INVITE_CODE: 'letmein',
+    });
+  });
+  after(async () => {
+    await t.destroy();
+    await new Promise((resolve) => jwks.close(resolve));
+  });
+
+  it('tells the front end how to start the sign-in', async () => {
+    const res = await t.api.get('/api/auth/registration');
+    assert.equal(res.body.provider, 'firebase');
+    assert.deepEqual(res.body.firebase, {
+      apiKey: 'web-api-key',
+      authDomain: `${PROJECT}.firebaseapp.com`,
+      projectId: PROJECT,
+      signInProviders: ['google.com'],
+    });
+  });
+
+  it('keeps no passwords: register, login and change-password are refused', async () => {
+    const register = await t.api.post('/api/auth/register', { email: 'a@example.com', password: 'correct horse battery', inviteCode: 'letmein' });
+    assert.equal(register.status, 403);
+    assert.equal(register.body.error.code, 'password_sign_in_disabled');
+    const login = await t.api.post('/api/auth/login', { email: 'a@example.com', password: 'correct horse battery' });
+    assert.equal(login.status, 403);
+    assert.equal(login.body.error.code, 'password_sign_in_disabled');
+  });
+
+  it('refuses tokens that Firebase did not issue for this project', async () => {
+    const bad = async (token: string, status = 401, code = 'invalid_id_token') => {
+      const res = await t.api.post('/api/auth/firebase', { idToken: token, inviteCode: 'letmein' });
+      assert.equal(res.status, status);
+      assert.equal(res.body.error.code, code);
+    };
+    await bad('not-a-token');
+    await bad(await idToken({}, { signWith: strangerKey }));
+    await bad(await idToken({ aud: 'someone-elses-project' }));
+    await bad(await idToken({ iss: 'https://securetoken.google.com/someone-elses-project' }));
+    await bad(await idToken({}, { expiresIn: '-10m' }));
+    await bad(await idToken({ auth_time: Math.floor(Date.now() / 1000) + 3600 }));
+    // signed with "none", or with the public key as an HMAC secret, must not pass either
+    const [, body] = (await idToken()).split('.');
+    await bad(`${Buffer.from('{"alg":"none","typ":"JWT"}').toString('base64url')}.${body}.`);
+    // right project, but not an address the provider vouches for, or not Google at all
+    await bad(await idToken({ email_verified: false }), 403, 'email_not_verified');
+    await bad(await idToken({ firebase: { sign_in_provider: 'password' } }), 403, 'sign_in_method_not_allowed');
+    assert.equal((await t.api.get('/api/auth/registration')).body.hasUsers, false);
+  });
+
+  let ownerId = '';
+  let session = '';
+
+  it('asks a new account for the invite code, then makes it the owner', async () => {
+    const missing = await t.api.post('/api/auth/firebase', { idToken: await idToken() });
+    assert.equal(missing.status, 403);
+    assert.equal(missing.body.error.code, 'invite_required');
+    const wrong = await t.api.post('/api/auth/firebase', { idToken: await idToken(), inviteCode: 'guess' });
+    assert.equal(wrong.status, 403);
+    assert.equal(wrong.body.error.code, 'invalid_invite_code');
+
+    const res = await t.api.post('/api/auth/firebase', { idToken: await idToken({ email: 'Ada@Example.com' }), inviteCode: 'letmein' });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.user.role, 'owner');
+    assert.equal(res.body.user.email, 'ada@example.com');
+    assert.equal(res.body.user.displayName, 'Ada Lovelace');
+    assert.ok(res.body.token.startsWith('olf_'));
+    ownerId = res.body.user.id;
+    session = res.body.token;
+
+    const stored = await t.db.query<{ password_hash: string | null; firebase_uid: string }>('SELECT password_hash, firebase_uid FROM users');
+    assert.deepEqual(stored.rows, [{ password_hash: null, firebase_uid: 'uid-ada' }]);
+  });
+
+  it('signs the same account in again without the code, and the session works', async () => {
+    const again = await t.api.post('/api/auth/firebase', { idToken: await idToken() });
+    assert.equal(again.status, 200);
+    assert.equal(again.body.user.id, ownerId);
+    assert.notEqual(again.body.token, session);
+    const me = await t.api.get('/api/auth/me', session);
+    assert.equal(me.body.user.email, 'ada@example.com');
+    assert.equal((await t.api.post('/api/projects', { name: 'Notes' }, session)).status, 201);
+  });
+
+  it('makes later accounts members, each with their own id', async () => {
+    const other = await idToken({ sub: 'uid-grace', email: 'grace@example.com', name: 'Grace Hopper' });
+    assert.equal((await t.api.post('/api/auth/firebase', { idToken: other })).body.error.code, 'invite_required');
+    const res = await t.api.post('/api/auth/firebase', { idToken: other, inviteCode: 'letmein' });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.user.role, 'member');
+    assert.notEqual(res.body.user.id, ownerId);
+    assert.equal((await t.api.get('/api/projects', res.body.token)).body.projects.length, 0);
+  });
+
+  it('does not let one account take an address that belongs to another', async () => {
+    const clash = await t.api.post('/api/auth/firebase', {
+      idToken: await idToken({ sub: 'uid-impostor', email: 'ada@example.com' }),
+      inviteCode: 'letmein',
+    });
+    assert.equal(clash.status, 409);
+    const change = await t.api.patch('/api/auth/me', { email: 'someone@example.com' }, session);
+    assert.equal(change.status, 403);
+    assert.equal(change.body.error.code, 'email_from_provider');
+    assert.equal((await t.api.patch('/api/auth/me', { displayName: 'Ada L.' }, session)).body.user.displayName, 'Ada L.');
+  });
+});
+
 describe('invite-only registration', () => {
   let t: TestApp;
   before(async () => {
@@ -120,6 +273,12 @@ describe('invite-only registration', () => {
     assert.equal(second.body.user.role, 'member');
     const dup = await t.api.post('/api/auth/register', { ...body, inviteCode: 'let-me-in' });
     assert.equal(dup.status, 409);
+  });
+
+  it('has no Firebase sign-in unless it is switched on', async () => {
+    const res = await t.api.post('/api/auth/firebase', { idToken: 'anything' });
+    assert.equal(res.status, 403);
+    assert.equal(res.body.error.code, 'firebase_sign_in_disabled');
   });
 });
 

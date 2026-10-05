@@ -1,9 +1,10 @@
 # OpenLeaf
 
-A modular, self-hosted LaTeX writing back end — a personal, customisable
-Overleaf-style service. This repository is the **back end**: an HTTP API that
-stores projects, compiles them to PDF and keeps their history. Any front end
-(web, desktop, a script, a notebook) can be built on top of it.
+A modular, self-hosted LaTeX writing service — a personal, customisable
+Overleaf-style tool. The repository root is the **back end**: an HTTP API that
+stores projects, compiles them to PDF and keeps their history. The **front end**
+(the editor you open in a browser) is in [`web/`](web/README.md); any other
+front end (desktop, a script, a notebook) can be built on the same API.
 
 - **Runtime:** Node.js 22 + TypeScript + Fastify
 - **Storage:** PostgreSQL (projects, files, PDFs, history — everything)
@@ -119,7 +120,20 @@ The compile response looks like this:
 `status` is one of `success`, `failure` (LaTeX errors — a PDF may still exist),
 `timeout`, `error`, or `queued`/`running` when you compile with `?wait=false`.
 
-## Running it locally
+## The front end
+
+```bash
+cd web
+npm install
+npm run dev        # http://localhost:5173
+```
+
+By default the dev server forwards `/api` to the hosted instance, so the API does
+not have to run on your computer; set `OPENLEAF_API=http://localhost:3000` to use
+a local one. The sign-in screen also offers a sample library that needs no
+service at all. Details are in [`web/README.md`](web/README.md).
+
+## Running the API locally
 
 You need Node 22+, PostgreSQL 13+, and a TeX installation with `latexmk`.
 
@@ -218,9 +232,9 @@ automatically at the next start, tracked per module.
 
 ## Not included (yet)
 
-Real-time collaborative editing, a web front end, Git sync and spell-checking
-are not part of this back end. The file API's version checks are the hook for
-adding collaborative editing later.
+Real-time collaborative editing, Git sync and spell-checking are not part of
+this back end. The file API's version checks are the hook for adding
+collaborative editing later.
 
 ## Licence
 

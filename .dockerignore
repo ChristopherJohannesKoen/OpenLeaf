@@ -6,3 +6,4 @@ dist
 test
 *.md
 !README.md
+web

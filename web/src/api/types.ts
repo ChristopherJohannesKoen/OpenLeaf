@@ -1,0 +1,248 @@
+// Shapes of the OpenLeaf API, as the back end in ../../src returns them.
+
+export interface User {
+  id: string;
+  email: string;
+  displayName: string;
+  role: 'owner' | 'member';
+  createdAt: string;
+}
+
+export interface Session {
+  user: User;
+  token: string;
+  expiresAt: string | null;
+}
+
+export interface Registration {
+  mode: 'first-user' | 'invite' | 'open' | 'closed';
+  open: boolean;
+  requiresInviteCode: boolean;
+  hasUsers: boolean;
+}
+
+export interface EngineStatus {
+  id: string;
+  label: string;
+  description?: string;
+  available: boolean;
+  version: string | null;
+}
+
+export interface SystemInfo {
+  name: string;
+  version: string;
+  uptimeSeconds: number;
+  modules: { name: string; description: string; core: boolean }[];
+  registration: { mode: string; hasOwner: boolean };
+  limits: { maxUploadBytes: number; maxProjectBytes: number; maxTextFileBytes: number };
+  compile?: { defaultEngine: string; timeoutSeconds: number; engines: EngineStatus[] };
+  templates?: { builtin: string[] };
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  mainFile: string;
+  engine: string;
+  tags: string[];
+  settings: Record<string, unknown>;
+  archived: boolean;
+  trashed: boolean;
+  archivedAt: string | null;
+  trashedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  fileCount?: number;
+  totalSize?: number;
+}
+
+export type FileKind = 'text' | 'binary' | 'folder';
+
+export interface FileMeta {
+  id: string;
+  path: string;
+  kind: FileKind;
+  size: number;
+  sha256: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TextFile extends FileMeta {
+  content: string;
+}
+
+export type DiagnosticLevel = 'error' | 'warning' | 'typesetting';
+
+export interface Diagnostic {
+  level: DiagnosticLevel;
+  message: string;
+  /** Project-relative path when the problem is in a project file. */
+  file: string | null;
+  line: number | null;
+  source: 'latex' | 'bibtex' | 'biber' | 'latexmk';
+  /** The offending source text or extra explanation TeX printed, if any. */
+  context?: string;
+}
+
+export type CompileStatus = 'queued' | 'running' | 'success' | 'failure' | 'timeout' | 'error';
+
+export interface Compile {
+  id: string;
+  status: CompileStatus;
+  engine: string;
+  mainFile: string;
+  message: string | null;
+  errorCount: number;
+  warningCount: number;
+  hasPdf: boolean;
+  pdfSize: number | null;
+  hasSynctex: boolean;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  cached?: boolean;
+  diagnostics?: Diagnostic[];
+}
+
+export interface CompileOptions {
+  engine?: string;
+  mainFile?: string;
+  stopOnFirstError?: boolean;
+  clean?: boolean;
+  force?: boolean;
+}
+
+export interface PdfPosition {
+  page: number;
+  /** PDF points from the top-left of the page. */
+  h: number;
+  v: number;
+  width: number;
+  height: number;
+}
+
+export interface SourcePosition {
+  file: string;
+  line: number;
+  column: number;
+}
+
+export interface Version {
+  id: string;
+  kind: 'manual' | 'auto' | 'restore';
+  label: string;
+  mainFile: string;
+  engine: string;
+  fileCount: number;
+  totalSize: number;
+  createdAt: string;
+}
+
+export interface Change {
+  path: string;
+  kind: FileKind;
+  status: 'added' | 'removed' | 'modified';
+}
+
+export interface FileDiff {
+  path: string;
+  status: 'added' | 'removed' | 'modified' | 'unchanged';
+  binary: boolean;
+  patch: string | null;
+  before: string | null;
+  after: string | null;
+}
+
+export interface Template {
+  id: string;
+  name: string;
+  description: string;
+  engine: string;
+  mainFile: string;
+  builtin: boolean;
+  fileCount: number;
+}
+
+/** Preferences as the back end merges them over its defaults; the app keeps its own keys under `openleaf`. */
+export type Settings = Record<string, unknown>;
+
+/** An error the API answered with: `{ error: { code, message } }`. */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly details?: unknown;
+  constructor(status: number, code: string, message: string, details?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+/** Everything the screens need from a back end. Implemented by HttpApi (the real service) and SampleApi (in memory). */
+export interface Api {
+  readonly kind: 'service' | 'sample';
+  /** Where this back end lives, for display. */
+  readonly address: string;
+
+  // accounts
+  registration(): Promise<Registration>;
+  register(input: { email: string; password: string; displayName?: string; inviteCode?: string }): Promise<Session>;
+  login(email: string, password: string): Promise<Session>;
+  logout(): Promise<void>;
+  me(): Promise<User>;
+
+  // system
+  info(): Promise<SystemInfo>;
+
+  // projects
+  listProjects(status?: 'active' | 'archived' | 'trashed'): Promise<Project[]>;
+  getProject(id: string): Promise<Project>;
+  createProject(input: { name: string }): Promise<Project>;
+  createFromTemplate(templateId: string, input: { name: string }): Promise<Project>;
+  patchProject(id: string, patch: Partial<Pick<Project, 'name' | 'description' | 'mainFile' | 'engine' | 'tags'>> & { settings?: Record<string, unknown> }): Promise<Project>;
+  duplicateProject(id: string): Promise<Project>;
+  moveProject(id: string, to: 'archive' | 'unarchive' | 'trash' | 'restore'): Promise<Project>;
+  deleteProject(id: string): Promise<void>;
+  importZip(file: File, name?: string): Promise<Project>;
+  exportZip(id: string): Promise<Blob>;
+  backupAll(): Promise<Blob>;
+  listTemplates(): Promise<Template[]>;
+
+  // files
+  listFiles(id: string): Promise<{ mainFile: string; files: FileMeta[] }>;
+  readText(id: string, path: string): Promise<TextFile>;
+  saveText(id: string, path: string, content: string, opts?: { baseVersion?: number; createOnly?: boolean }): Promise<FileMeta>;
+  readRaw(id: string, path: string): Promise<Blob>;
+  createFolder(id: string, path: string): Promise<void>;
+  movePath(id: string, from: string, to: string): Promise<void>;
+  deletePath(id: string, path: string): Promise<void>;
+  upload(id: string, files: File[], folder?: string): Promise<FileMeta[]>;
+
+  // compile
+  compile(id: string, options?: CompileOptions): Promise<Compile>;
+  latestCompile(id: string): Promise<Compile | null>;
+  /** The PDF of a compile, or of the latest compile that produced one. */
+  pdf(id: string, compileId?: string): Promise<ArrayBuffer>;
+  log(id: string, compileId?: string): Promise<string>;
+  synctexForward(id: string, at: { file: string; line: number; column?: number }): Promise<PdfPosition[]>;
+  synctexInverse(id: string, at: { page: number; h: number; v: number }): Promise<SourcePosition | null>;
+
+  // history
+  listVersions(id: string): Promise<Version[]>;
+  createVersion(id: string, label: string): Promise<Version>;
+  versionChanges(id: string, versionId: string): Promise<Change[]>;
+  versionDiff(id: string, versionId: string, path: string): Promise<FileDiff>;
+  restoreVersion(id: string, versionId: string): Promise<void>;
+  deleteVersion(id: string, versionId: string): Promise<void>;
+
+  // preferences
+  getSettings(): Promise<Settings>;
+  patchSettings(patch: Record<string, unknown>): Promise<Settings>;
+}

@@ -1,0 +1,243 @@
+/* Generated from design/tokens.json by scripts/tokens.mjs. Do not edit by hand. */
+:root, [data-theme="light"] {
+  --depth-0: #f9fbf8;
+  --depth-1: #f0f3ee;
+  --depth-2: #e6e9e2;
+  --depth-3: #d9ded5;
+  --depth-4: #ccd2c7;
+  --ink: #201a10;
+  --ink-2: #464236;
+  --ink-3: #57584b;
+  --rule: #adb4a7;
+  --rule-strong: #656c5c;
+  --bronze: #b47825;
+  --bronze-ink: #713f00;
+  --bronze-wash: #eedbbd;
+  --on-bronze: #1b150b;
+  --patina: #297163;
+  --patina-ink: #0f574a;
+  --patina-wash: #c7e6dd;
+  --on-patina: #f9fbf8;
+  --cinnabar: #b23a23;
+  --cinnabar-ink: #9a2207;
+  --cinnabar-wash: #f8dad2;
+  --on-cinnabar: #fffaf5;
+  --proof-paper: #ffffff;
+  --proof-ink: #1c1b18;
+  --focus: var(--patina-ink);
+  --selection: var(--patina-wash);
+  --link: var(--patina-ink);
+  --syntax-command: var(--bronze-ink);
+  --syntax-math: var(--patina-ink);
+  --syntax-comment: var(--ink-2);
+  --syntax-brace: var(--ink-3);
+}
+[data-theme="dark"] {
+  --depth-0: #322d26;
+  --depth-1: #24201a;
+  --depth-2: #1a1712;
+  --depth-3: #110f0c;
+  --depth-4: #0a0806;
+  --ink: #ebe4d6;
+  --ink-2: #bfb7a6;
+  --ink-3: #a69e8d;
+  --rule: #47413a;
+  --rule-strong: #8e8576;
+  --bronze: #d3a056;
+  --bronze-ink: #e1b671;
+  --bronze-wash: #3b2a17;
+  --on-bronze: #161107;
+  --patina: #75bbab;
+  --patina-ink: #8ccdbe;
+  --patina-wash: #16362f;
+  --on-patina: #0c1916;
+  --cinnabar: #e57255;
+  --cinnabar-ink: #f3947c;
+  --cinnabar-wash: #472119;
+  --on-cinnabar: #1d0c08;
+  --proof-paper: #eae7e2;
+  --proof-ink: #1c1b18;
+  --focus: var(--patina-ink);
+  --selection: var(--patina-wash);
+  --link: var(--patina-ink);
+  --syntax-command: var(--bronze-ink);
+  --syntax-math: var(--patina-ink);
+  --syntax-comment: var(--ink-2);
+  --syntax-brace: var(--ink-3);
+}
+:root {
+  --space-hair: 1px;
+  --space-quarter: 5px;
+  --space-half: 10px;
+  --space-3q: 15px;
+  --space-line: 20px;
+  --space-2line: 40px;
+  --space-3line: 60px;
+  --space-4line: 80px;
+  --radius-none: 0px;
+  --radius-nib: 2px;
+  --measure-source: 80ch;
+  --measure-margin: 280px;
+  --measure-gutter: 60px;
+  --measure-rail: 40px;
+  --measure-control: 30px;
+  --measure-prose: 64ch;
+  --font-voice: "Gentium Book Plus", "Gentium Plus", "Palatino Linotype", Palatino, "Book Antiqua", serif;
+  --font-control: Commissioner, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-source: Inconsolata, "DejaVu Sans Mono", Consolas, "Courier New", monospace;
+}
+.voice-display {
+  font-family: var(--font-voice);
+  font-size: 60px;
+  line-height: 60px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+}
+.voice-title {
+  font-family: var(--font-voice);
+  font-size: 30px;
+  line-height: 40px;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+}
+.voice-heading {
+  font-family: var(--font-voice);
+  font-size: 20px;
+  line-height: 30px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+.voice-name {
+  font-family: var(--font-voice);
+  font-size: 16px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+.voice-prose {
+  font-family: var(--font-voice);
+  font-size: 16px;
+  line-height: 25px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+.voice-scholion {
+  font-family: var(--font-voice);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: normal;
+  font-style: italic;
+}
+.voice-caps {
+  font-family: var(--font-voice);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+}
+.control {
+  font-family: var(--font-control);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  letter-spacing: normal;
+}
+.control-quiet {
+  font-family: var(--font-control);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+.control-strong {
+  font-family: var(--font-control);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: normal;
+}
+.control-label {
+  font-family: var(--font-control);
+  font-size: 12px;
+  line-height: 15px;
+  font-weight: 500;
+  letter-spacing: normal;
+}
+.source {
+  font-family: var(--font-source);
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+.source-strong {
+  font-family: var(--font-source);
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 700;
+  letter-spacing: normal;
+}
+.source-figure {
+  font-family: var(--font-source);
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+@font-face {
+  font-family: "Gentium Book Plus";
+  src: url("/fonts/GentiumBookPlus-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Gentium Book Plus";
+  src: url("/fonts/GentiumBookPlus-Italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Gentium Book Plus";
+  src: url("/fonts/GentiumBookPlus-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Commissioner";
+  src: url("/fonts/Commissioner-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Commissioner";
+  src: url("/fonts/Commissioner-Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Commissioner";
+  src: url("/fonts/Commissioner-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Inconsolata";
+  src: url("/fonts/Inconsolata-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Inconsolata";
+  src: url("/fonts/Inconsolata-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}

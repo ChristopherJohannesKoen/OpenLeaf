@@ -1,0 +1,165 @@
+/* What the app adds to the design system's stylesheet: the pieces a running program needs
+   (scrolling, the editor's frame, inline forms) in the same tokens and the same 20px line. */
+
+html, body, #root { height: 100%; }
+body { overflow: hidden; }
+button, input, select { font: inherit; }
+a { color: inherit; }
+p { margin: 0; }
+
+/* ---------- additions to design-system components ---------- */
+
+.ol-siglum--off, button.ol-siglum--off { border-style: dashed; color: var(--ink-3); }
+button.ol-siglum--off:hover { border-style: solid; }
+
+.ol-headline__home { appearance: none; display: inline-flex; padding: 0; margin: 0; border: 0; background: none; color: inherit; cursor: pointer; }
+.ol-headline__rename {
+  appearance: none; padding: 0; margin: 0; border: 0; background: none; color: inherit; cursor: text;
+  font-family: var(--font-voice); font-size: 16px; line-height: 20px;
+}
+.ol-headline__rename:hover { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.ol-headline__form .ol-field { display: block; width: 280px; }
+.ol-headline__form .ol-field__label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.ol-headline__form .ol-field__input { font-family: var(--font-voice); font-size: 16px; }
+
+.ol-menu__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-menu__item:disabled { color: var(--ink-3); cursor: default; }
+.ol-menu { max-height: min(70vh, 560px); overflow-y: auto; }
+
+.ol-select { appearance: auto; padding-right: var(--space-quarter); }
+
+.ol-catalogue td.ol-catalogue__margin { position: relative; }
+.ol-catalogue__note { display: block; padding-right: 50px; }
+.ol-catalogue__more { position: absolute; right: var(--space-quarter); top: 50%; translate: 0 -50%; opacity: 0; }
+.ol-catalogue tbody tr:hover .ol-catalogue__more, .ol-catalogue__more:focus-visible { opacity: 1; }
+.ol-catalogue__title { cursor: pointer; }
+
+.ol-pane__body { display: flex; flex-direction: column; }
+.ol-pane__body > * { min-height: 0; }
+.ol-pane__scroll { flex: 1; overflow: auto; overscroll-behavior: contain; }
+.ol-pane__ask { padding: var(--space-half); border-bottom: 1px solid var(--rule); display: grid; gap: var(--space-half); }
+.ol-pane__ask-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-half); }
+.ol-pane__ask .ol-confirm { padding: var(--space-half); }
+.ol-pane__ask .ol-confirm__words { flex-basis: 100%; }
+.ol-pane__ask .ol-confirm__question { font-size: 14px; overflow-wrap: anywhere; }
+
+.ol-workspace { position: fixed; inset: 0; }
+.ol-workspace__panes--solo { grid-template-columns: minmax(0, 1fr); }
+.ol-workspace__panes--solo.ol-workspace__panes--side { grid-template-columns: var(--ol-side, 220px) minmax(0, 1fr); }
+.ol-workspace__side { grid-auto-flow: row; }
+.ol-workspace__main > .ol-notice { flex: none; margin: var(--space-half); }
+.ol-workspace__under .ol-pane__body { max-height: 165px; }
+
+.ol-screen { position: fixed; inset: 0; }
+.ol-screen__page { overflow: auto; }
+.ol-screen__title--first { margin-top: var(--space-2line); }
+.ol-screen__page > .ol-notice, .ol-screen__page > .ol-strip, .ol-screen__page > .ol-confirm { margin-bottom: var(--space-line); }
+.ol-screen__fields { display: grid; gap: var(--space-line); max-width: 320px; }
+.ol-screen__cols > div > .ol-screen__heading:first-child { margin-top: var(--space-2line); }
+
+.ol-notice .ol-confirm__question { display: flex; gap: var(--space-quarter); align-items: baseline; }
+.ol-strip { align-items: flex-end; }
+.ol-strip > .ol-field { flex: 1 1 240px; }
+
+.ol-empty {
+  margin: var(--space-2line) auto; padding: 0 var(--space-line); max-width: 46ch;
+  font-family: var(--font-voice); font-size: 16px; line-height: 25px; color: var(--ink-2);
+}
+.ol-empty--pane { margin: var(--space-half) 0; font-style: italic; font-size: 14px; line-height: 20px; }
+
+.ol-scrim { position: fixed; inset: 0; z-index: 59; }
+.ol-popover { position: fixed; z-index: 60; }
+.ol-palette { position: fixed; z-index: 60; top: var(--space-4line); left: 50%; translate: -50% 0; max-width: calc(100vw - 40px); }
+.ol-palette .ol-menu { max-width: 100%; }
+
+/* ---------- Source pane ---------- */
+
+.ol-source-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.ol-source-pane__body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ol-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; background: var(--depth-1); }
+.ol-editor__head { display: flex; flex: none; height: 20px; padding-left: 70px; border-bottom: 1px solid var(--rule); overflow: hidden; }
+.ol-editor__head .ol-measure { margin-right: -1px; }
+.ol-editor__margin-head { flex: 1; min-width: 0; padding: 0 var(--space-half); border-left: 1px solid var(--rule); line-height: 19px; }
+.ol-editor__host { flex: 1; min-height: 0; }
+.ol-editor--bare .cm-content { box-shadow: 1px 0 0 var(--rule); }
+.ol-editor .ol-mark { vertical-align: top; }
+
+/* ---------- Apparatus ---------- */
+
+.ol-apparatus-pane { flex: 1; overflow: auto; background: var(--depth-4); }
+.ol-apparatus-pane__none { padding: var(--space-half) var(--space-half) var(--space-half) 30px; font-family: var(--font-voice); font-style: italic; font-size: 14px; line-height: 20px; color: var(--ink-2); }
+.ol-entry__text { overflow-wrap: anywhere; }
+.ol-log { margin: 0; padding: var(--space-half) var(--space-half) var(--space-half) 30px; font-family: var(--font-source); font-size: 13px; line-height: 20px; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ---------- Proof ---------- */
+
+.ol-proof { flex: 1; min-height: 0; overflow: auto; padding: var(--space-line) 30px; }
+.ol-proof__page { display: flex; flex-direction: column; align-items: center; gap: var(--space-half); width: 100%; flex: none; }
+/* The page is drawn on white; multiplying it onto the sheet lets the paper take the theme's proof-paper. */
+.ol-sheet__canvas { display: block; width: 100%; height: 100%; mix-blend-mode: multiply; }
+.ol-proof .ol-empty { margin-top: var(--space-3line); }
+
+/* ---------- History ---------- */
+
+.ol-history { list-style: none; margin: 0; padding: var(--space-quarter) 0; }
+.ol-history__item {
+  appearance: none; width: 100%; margin: 0; border: 0; background: transparent; cursor: pointer; text-align: left;
+  display: grid; grid-template-columns: 10px auto minmax(0, 1fr); column-gap: var(--space-quarter); align-items: baseline;
+  min-height: 25px; padding: 2px var(--space-half) 3px var(--space-quarter);
+  color: var(--ink-2);
+}
+.ol-history__item:hover, .ol-history__item--active { color: var(--ink); }
+.ol-history__item--active { background: var(--depth-0); }
+.ol-history__when { color: var(--ink-3); white-space: nowrap; }
+.ol-history__item--active .ol-history__when { color: var(--ink-2); }
+.ol-history__label { font-family: var(--font-voice); font-style: italic; font-size: 14px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-history__detail { padding: 0 0 var(--space-quarter); border-bottom: 1px solid var(--rule); background: var(--depth-0); }
+.ol-history__detail .ol-pane__ask-actions { padding: var(--space-quarter) var(--space-half) 0; justify-content: space-between; color: var(--ink-3); }
+.ol-history__none { padding: 0 var(--space-half) 0 20px; font-family: var(--font-voice); font-style: italic; font-size: 14px; line-height: 20px; color: var(--ink-2); }
+.ol-history__change { padding-left: 20px; }
+
+.ol-patch { padding: var(--space-quarter) 0 var(--space-line); font-family: var(--font-source); font-size: 13px; line-height: 20px; }
+.ol-patch__hunk { padding: var(--space-half) var(--space-half) 0 110px; color: var(--ink-3); }
+.ol-patch__line { display: grid; grid-template-columns: 40px 40px 20px minmax(0, 1fr); column-gap: var(--space-quarter); padding-right: var(--space-half); color: var(--ink-2); }
+.ol-patch__no { text-align: right; color: var(--ink-3); user-select: none; }
+.ol-patch__sign { text-align: center; }
+.ol-patch__text { font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ol-patch__line--added { color: var(--patina-ink); background: var(--patina-wash); }
+.ol-patch__line--added .ol-patch__text { color: var(--ink); }
+.ol-patch__line--removed { color: var(--cinnabar-ink); background: var(--cinnabar-wash); }
+.ol-patch__line--removed .ol-patch__text { color: var(--ink); }
+.ol-patch__line--added .ol-patch__no, .ol-patch__line--removed .ol-patch__no { color: var(--ink-2); }
+
+/* ---------- Sign in ---------- */
+
+.ol-signin { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr); background: var(--depth-1); color: var(--ink); }
+.ol-signin__page { overflow: auto; padding: var(--space-3line) var(--space-4line) var(--space-2line); }
+.ol-signin__title { margin-top: var(--space-3line); }
+.ol-signin__service { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-quarter) var(--space-3q); margin-top: var(--space-line); color: var(--ink-2); }
+.ol-signin__hint { margin-top: var(--space-quarter); color: var(--ink-2); max-width: var(--measure-prose); }
+.ol-signin__form { display: grid; gap: var(--space-line); max-width: 360px; margin-top: var(--space-2line); }
+.ol-signin__actions { display: flex; align-items: center; gap: var(--space-3q); }
+.ol-signin__sample { display: grid; gap: var(--space-half); justify-items: start; max-width: 360px; margin-top: var(--space-3line); padding-top: var(--space-line); border-top: 1px solid var(--rule); color: var(--ink-2); }
+.ol-signin__art { position: relative; overflow: hidden; border-left: 1px solid var(--rule); }
+.ol-coverart { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ol-coverart__ink { fill: var(--ink); }
+.ol-coverart__patina { fill: var(--patina); }
+.ol-coverart__bronze { fill: var(--bronze); }
+.ol-coverart__desk { fill: var(--depth-3); }
+.ol-coverart__cinnabar { fill: var(--cinnabar); }
+.ol-coverart__line { fill: none; stroke: var(--rule); stroke-width: 1; }
+
+@media (max-width: 900px) {
+  .ol-signin { grid-template-columns: minmax(0, 1fr); }
+  .ol-signin__art { display: none; }
+  .ol-signin__page, .ol-screen__page { padding: var(--space-2line) var(--space-line); }
+  .ol-screen__cols { grid-template-columns: minmax(0, 1fr); }
+  .ol-screen__bar { flex-wrap: wrap; }
+  .ol-catalogue th.ol-catalogue__margin, .ol-catalogue td.ol-catalogue__margin { display: none; }
+}
+
+/* ---------- small corrections ---------- */
+
+.ol-button--bare:disabled, .ol-button--bare[aria-disabled="true"] { border-color: transparent; }
+.ol-ledger__note .ol-fig, .ol-confirm__detail .ol-fig { font-style: normal; }
+.ol-menu__input:focus-visible { outline: none; }

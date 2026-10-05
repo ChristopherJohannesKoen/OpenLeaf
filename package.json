@@ -13,7 +13,9 @@
     "start": "node dist/server.js",
     "migrate": "node dist/migrate-cli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test --test-reporter=spec --test-concurrency=1 test/*.test.ts"
+    "test": "tsx --test --test-reporter=spec --test-concurrency=1 test/*.test.ts",
+    "web": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",

@@ -159,9 +159,22 @@ TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/openleaf_test npm test
 
 ## Deploying on Render
 
-`render.yaml` is a Blueprint that creates the database and the web service and
-wires them together: **Dashboard → New → Blueprint →** pick this repository.
-Migrations run automatically at start-up.
+`render.yaml` is a Blueprint that creates the database, the API and the front
+end and wires them together: **Dashboard → New → Blueprint →** pick this
+repository. Migrations run automatically at start-up.
+
+The hosted instance of this repository:
+
+| | address |
+| --- | --- |
+| The site (open this) | https://openleaf-cw3y.onrender.com |
+| The API | https://openleaf-api.onrender.com (`/docs`, `/healthz`) |
+
+The API and the site are two services. The site is built with
+`VITE_API_URL` set to the API's address, and the API's `CORS_ORIGINS` is set to
+the site's address, so only that site may call it from a browser. If either
+address changes (a custom domain, a renamed service), change the matching
+variable and redeploy. Pushing to `main` redeploys both.
 
 Things to know about Render's free plans:
 
@@ -171,6 +184,8 @@ Things to know about Render's free plans:
 - The free web service sleeps after 15 minutes without requests (the next
   request takes about a minute) and has 0.1 CPU / 512 MB, so compiles are
   several times slower than on a laptop. The Starter plan removes both limits.
+- The static site is free and does not sleep: the sign-in screen opens at once
+  and waits there for the API to wake.
 
 ## Configuration
 

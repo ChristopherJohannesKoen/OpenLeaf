@@ -114,7 +114,12 @@ Things worth knowing before changing it:
 
 ## Hosting it
 
-`npm run build` makes a static site. Serve `web/dist` from anywhere and either
+The hosted copy is a Render static site, https://openleaf-cw3y.onrender.com, rebuilt on every push
+to `main` with `cd web && npm ci && npm run build`. It is built with
+`VITE_API_URL=https://openleaf-api.onrender.com`, and the API's `CORS_ORIGINS` names the site, so
+the browser calls the API directly. Both are set in `render.yaml` (and in the Render dashboard).
+
+To host it elsewhere: `npm run build` makes a static site. Serve `web/dist` from anywhere and either
 
 - put it behind the same origin as the API (forward `/api` to the service), or
 - build with `VITE_API_URL=https://your-api` so the browser calls the API directly; the API must

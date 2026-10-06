@@ -1,4 +1,6 @@
-# Dependabot: a pull request when a dependency has a fix or a new version.
+# Dependabot: a pull request when a dependency has a security fix, or a new minor or patch version.
+# Major versions (React 19, a new Node line, a new pdf.js) change behaviour and are taken on
+# deliberately, by hand, so they are not proposed here. Security fixes are proposed whatever the version.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -6,6 +8,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       api:
         patterns: ["*"]
@@ -15,6 +20,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       web:
         patterns: ["*"]
@@ -23,3 +31,7 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    ignore:
+      # The image stays on the Node 22 line the service is written for.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]

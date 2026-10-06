@@ -26,7 +26,7 @@ first. None needs privileges, so they hold on container hosts that offer nothing
 
 | Measure | What it does | Needs |
 | --- | --- | --- |
-| TeX's switches | No reading or writing outside the project (`openin_any=p`), only TeX Live's short list of helper programs, `latexmkrc` ignored, none of the service's environment variables. | — |
+| TeX's switches | No reading or writing outside the project (`openin_any=p`), only TeX Live's short list of helper programs, `latexmkrc` ignored, none of the service's environment variables. LuaLaTeX is the exception on reading: see below. | — |
 | Limits | A ceiling on memory and on the size of any file written; a time limit, after which the whole process group is ended. The group is also ended when the compile finishes, so nothing it started lives on. | `prlimit` |
 | No network, no other processes | The launcher (`native/sandbox.c`) installs a system-call filter (seccomp) before TeX starts: no socket of any kind can be opened, no other process can be traced or read, the process group cannot be left, and a handful of kernel facilities TeX never uses are refused. Inherited by everything the compile starts. | Any Linux kernel since 3.17 |
 | A narrow file view | The launcher also applies Landlock rules: the compile can read and run the TeX installation, read and write its own folder and TeX's caches, and see nothing else: not the service's files, not other projects, not `/proc`. It cannot make links or run what it wrote. On newer kernels it also cannot signal processes outside itself. | Kernel 5.13+ with Landlock enabled |
@@ -39,6 +39,14 @@ At start-up the service tries each measure, compiles a test document inside what
 found, and steps down one layer at a time only if TeX does not compile; what it ends
 up with is in the start-up log and in `GET /api/system/info`. `COMPILE_ISOLATION=required`
 refuses to compile unless at least the network is cut.
+
+**LuaLaTeX.** LuaTeX runs Lua, and on current TeX Live its own font loader opens its data
+files by full path, which TeX's paranoid read setting refuses; with that setting LuaLaTeX
+cannot load a font. So LuaLaTeX runs with `openin_any=r` (no dot files) instead, and what a
+LuaLaTeX document can read is bounded by the file rules, not by TeX. On a host whose kernel
+has no Landlock (the start-up log and `/api/system/info` say `narrowFiles: false`) a
+LuaLaTeX document can read whatever the service's user can; there, leave LuaLaTeX out
+(`COMPILE_ENGINES=pdflatex,xelatex`) unless every account is trusted.
 
 What this does not give: a guarantee. The measures were checked to do what they say
 for ordinary programs; nobody has attacked them. A flaw in the kernel is outside their

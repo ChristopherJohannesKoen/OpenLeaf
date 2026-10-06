@@ -22,6 +22,8 @@ class FakeGithub {
   expiring = false;
   refresh = 'ghr_' + randomBytes(12).toString('hex');
   refreshRevoked = false;
+  /** When set, GitHub answers a renewal with this error instead (as for an app that may not renew). */
+  renewalError = '';
   renewals = 0;
   calls: string[] = [];
   blobs = new Map<string, Buffer>();
@@ -93,6 +95,7 @@ class FakeGithub {
       if (path === '/login/oauth/access_token') {
         const expiry = this.expiring ? { expires_in: 28800, refresh_token: this.refresh, refresh_token_expires_in: 15897600 } : {};
         if (body.grant_type === 'refresh_token') {
+          if (this.renewalError) return send(200, { error: this.renewalError, error_description: 'The client_id and/or client_secret passed are incorrect.' });
           if (this.refreshRevoked || body.refresh_token !== this.refresh || body.client_id !== 'client-id') {
             return send(200, { error: 'bad_refresh_token', error_description: 'The refresh token passed is incorrect or expired.' });
           }
@@ -428,6 +431,37 @@ describe('a link that expires and renews itself', () => {
     // And with time left again, no further renewal.
     await t.api.get(`/api/projects/${projectId}/github`, ada.token);
     assert.equal(gh.renewals, 1);
+  });
+
+  it('renews on request, and leaves a link that does not expire as it is', async () => {
+    const before = gh.renewals;
+    const oldRefresh = gh.refresh;
+    const res = await t.api.post('/api/github/renew', undefined, ada.token);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.renewed, true);
+    assert.equal(gh.renewals, before + 1);
+    assert.notEqual(gh.refresh, oldRefresh);
+    assert.ok(new Date(res.body.account.lapsesAt).getTime() > Date.now() + 150 * 86_400_000);
+    assert.ok(!JSON.stringify(res.body).includes(gh.token) && !JSON.stringify(res.body).includes(gh.refresh));
+    assert.equal((await t.api.post('/api/github/renew')).status, 401);
+
+    // As a link made while the app's tokens did not expire: nothing to renew.
+    await t.db.query('UPDATE github_accounts SET refresh_enc = NULL, refresh_expires_at = NULL, token_expires_at = NULL');
+    const plain = await t.api.post('/api/github/renew', undefined, ada.token);
+    assert.equal(plain.body.renewed, false);
+    assert.equal(plain.body.account.lapsesAt, null);
+    assert.equal(gh.renewals, before + 1);
+    assert.equal((await link()).body.status, 'linked');
+  });
+
+  it('keeps the link and says what GitHub said when the refusal is not about the link', async () => {
+    gh.renewalError = 'incorrect_client_credentials';
+    const res = await t.api.post('/api/github/renew', undefined, ada.token);
+    assert.equal(res.status, 502);
+    assert.equal(res.body.error.code, 'github_renewal_refused');
+    assert.match(res.body.error.message, /incorrect_client_credentials/);
+    assert.equal((await t.db.query('SELECT 1 FROM github_accounts')).rowCount, 1);
+    gh.renewalError = '';
   });
 
   it('lets the link lapse when GitHub will not renew it', async () => {

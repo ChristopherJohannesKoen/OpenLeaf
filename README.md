@@ -308,7 +308,7 @@ To switch it on for an instance:
    repositories (the default, `repo`, reaches private ones too).
 
 Routes: `GET|DELETE /api/github`, `POST /api/github/link`,
-`POST /api/github/link/:linkId`, and per project `GET|POST|DELETE
+`POST /api/github/link/:linkId`, `POST /api/github/renew`, and per project `GET|POST|DELETE
 /api/projects/:id/github` and `POST /api/projects/:id/github/save`.
 
 ## Customising

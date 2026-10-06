@@ -172,6 +172,12 @@ export const githubModule: OpenLeafModule = {
         // GitHub could not be reached or is refusing for now: the link itself is not at fault.
         return explain(err, row.user_id, 'renew the link');
       }
+      if (answer.error && answer.error !== 'bad_refresh_token') {
+        // Not a verdict on this link (the app's settings, a grant GitHub does not offer): keep
+        // the link and say what GitHub said.
+        const said = answer.error_description ? `${answer.error}: ${answer.error_description}` : answer.error;
+        throw new HttpError(502, 'github_renewal_refused', `GitHub would not renew the link (${said}).`);
+      }
       if (answer.error || !answer.access_token) {
         // GitHub will not renew it: it was revoked there, or it ran out.
         await forget(row.user_id);
@@ -198,14 +204,18 @@ export const githubModule: OpenLeafModule = {
         throw conflict('Link a GitHub account first (Modules, Connections).', 'github_not_linked');
       }
       if (row.token_expires_at && row.token_expires_at.getTime() - Date.now() < RENEW_MARGIN_MS) {
-        let running = renewing.get(userId);
-        if (!running) {
-          running = renew(row).finally(() => renewing.delete(userId));
-          renewing.set(userId, running);
-        }
-        token = await running;
+        token = await renewOnce(row);
       }
       return new Github(github, token);
+    }
+
+    function renewOnce(row: AccountRow): Promise<string> {
+      let running = renewing.get(row.user_id);
+      if (!running) {
+        running = renew(row).finally(() => renewing.delete(row.user_id));
+        renewing.set(row.user_id, running);
+      }
+      return running;
     }
 
     /** Turn what GitHub said into something to show; a refused token unlinks the account. */
@@ -435,6 +445,32 @@ export const githubModule: OpenLeafModule = {
           [user.id, me.id, me.login, me.name ?? '', kept.token, granted.join(' '), kept.tokenExpiresAt, kept.refresh, kept.refreshExpiresAt],
         );
         return { status: 'linked' as const, account: accountJson(row.rows[0]!) };
+      },
+    );
+
+    app.post(
+      '/api/github/renew',
+      {
+        ...auth,
+        config: linkLimit,
+        schema: {
+          tags: [TAG],
+          summary: 'Renew the link to GitHub now',
+          description:
+            'A link whose token expires renews itself whenever it is used, so this is never needed; it is here ' +
+            'to check that renewal works on an instance, and to push the date the link would lapse further out. ' +
+            'A link whose token does not expire is left as it is (`renewed: false`).',
+          security: secured,
+        },
+      },
+      async (req) => {
+        settings();
+        const user = currentUser(req);
+        const row = await account(db, user.id);
+        if (!row) throw conflict('Link a GitHub account first (Modules, Connections).', 'github_not_linked');
+        if (!row.refresh_enc) return { renewed: false, account: accountJson(row) };
+        await renewOnce(row);
+        return { renewed: true, account: accountJson((await account(db, user.id))!) };
       },
     );
 

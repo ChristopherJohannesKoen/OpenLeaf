@@ -5,7 +5,7 @@
 #   docker build --build-arg TEX_EXTRA_PACKAGES="texlive-lang-european texlive-fonts-extra" .
 
 # ---------- build stage: compile TypeScript ----------
-FROM node:22-trixie-slim AS build
+FROM node:25-trixie-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -14,7 +14,7 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 # ---------- runtime stage ----------
-FROM node:22-trixie-slim AS runtime
+FROM node:25-trixie-slim AS runtime
 
 # A broad research-oriented selection (roughly 1.5 GB): the three engines, latexmk,
 # BibTeX/Biber, common packages, science and publisher classes, TikZ, beamer.

@@ -1,4 +1,4 @@
-import { mkdir, readFile as fsReadFile, rm, writeFile as fsWriteFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile as fsReadFile, rm, writeFile as fsWriteFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Queryable } from '../../core/db.js';
 import { sha256 } from '../../core/util.js';
@@ -42,6 +42,31 @@ function resolveInside(base: string, relative: string): string {
 }
 
 /**
+ * A compile wrote in this folder. Before the service writes into it again, take out anything
+ * that is not a plain file or a folder, so that no write can be led somewhere else through a
+ * link. TeX has no need to leave links, devices or pipes behind.
+ */
+async function removeOddEntries(dir: string): Promise<number> {
+  let removed = 0;
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) removed += await removeOddEntries(full);
+    else if (!entry.isFile()) {
+      await rm(full, { force: true });
+      removed++;
+    }
+  }
+  return removed;
+}
+
+/** True when the path exists and is something other than a real folder (a link, a file). */
+async function notAFolder(dir: string): Promise<boolean> {
+  const info = await lstat(dir).catch(() => null);
+  return info !== null && !info.isDirectory();
+}
+
+/**
  * Bring the on-disk copy in line with the database: write new/changed files,
  * remove files that were deleted from the project, leave build artefacts alone.
  * Returns a hash that identifies this exact set of sources.
@@ -52,10 +77,14 @@ export async function syncWorkspace(
   ws: Workspace,
   opts: { clean?: boolean } = {},
 ): Promise<{ sourceHash: string; written: number; removed: number }> {
-  if (opts.clean) await rm(ws.root, { recursive: true, force: true });
+  // If the folder itself was swapped for something else, start again from nothing.
+  const replaced = (await notAFolder(ws.root)) || (await notAFolder(ws.src));
+  const clean = Boolean(opts.clean) || replaced;
+  if (clean) await rm(ws.root, { recursive: true, force: true });
   await mkdir(ws.src, { recursive: true });
+  if (!clean) await removeOddEntries(ws.src);
 
-  const previous = opts.clean ? {} : await loadManifest(ws);
+  const previous = clean ? {} : await loadManifest(ws);
   const files = await listFiles(q, projectId);
   const next: Manifest = {};
   for (const f of files) next[f.path] = `${f.kind}:${f.sha256}`;

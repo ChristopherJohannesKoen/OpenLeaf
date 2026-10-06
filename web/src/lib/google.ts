@@ -25,9 +25,16 @@ function authFor(settings: FirebaseSettings): Auth {
   return auth;
 }
 
+// Google sign-in is tied to the site's own address twice over: the Firebase project lists the
+// addresses that may ask, and the key is limited to them. A copy of the page anywhere else,
+// a development server included, is refused.
+const ELSEWHERE =
+  'Google sign-in works only from the service’s own site, not from this address. ' +
+  'To work on OpenLeaf on your own computer, run an API there as well (docker compose up): it signs in with an email and password.';
+
 const SAID: Record<string, string> = {
   'auth/popup-blocked': 'The browser blocked Google’s window. Allow pop-ups for this page, then try again.',
-  'auth/unauthorized-domain': 'This page’s address is not yet allowed to sign in. Add it under Authentication, Settings, Authorised domains in the Firebase project.',
+  'auth/unauthorized-domain': ELSEWHERE,
   'auth/operation-not-allowed': 'Google sign-in is not switched on in the Firebase project (Authentication, Sign-in method).',
   'auth/network-request-failed': 'Google could not be reached. Check the connection and try again.',
   'auth/invalid-api-key': 'The service gave a Firebase key that Google does not accept. Check FIREBASE_API_KEY on the service.',
@@ -49,6 +56,8 @@ export async function proveWithGoogle(settings: FirebaseSettings): Promise<Googl
   } catch (err) {
     const code = err instanceof FirebaseError ? err.code : '';
     if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request' || code === 'auth/user-cancelled') return null;
+    // A key limited to the site's address answers "requests from referer … are blocked".
+    if (/requests-from-referer|referer.*blocked|api-key-http-referrer-blocked/i.test(code)) throw new GoogleSignInError(ELSEWHERE);
     throw new GoogleSignInError(SAID[code] ?? `Google’s sign-in did not finish${code ? ` (${code})` : ''}. Try again.`);
   } finally {
     void signOut(a).catch(() => {});

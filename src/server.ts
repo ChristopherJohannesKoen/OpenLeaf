@@ -2,6 +2,10 @@ import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 
 async function main() {
+  // The guard library (native/guard.c) did its work when this process started; the programs
+  // the service starts have no use for it.
+  if (process.env.LD_PRELOAD?.includes('openleaf-guard')) delete process.env.LD_PRELOAD;
+
   const config = loadConfig();
   const openleaf = await buildApp(config);
 

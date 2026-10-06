@@ -18,6 +18,11 @@ class FakeGithub {
   token = 'gho_' + randomBytes(12).toString('hex');
   approved: 'no' | 'yes' | 'denied' = 'no';
   revoked = false;
+  /** As an app set to expire its tokens: each token comes with a time limit and a refresh token. */
+  expiring = false;
+  refresh = 'ghr_' + randomBytes(12).toString('hex');
+  refreshRevoked = false;
+  renewals = 0;
   calls: string[] = [];
   blobs = new Map<string, Buffer>();
   trees = new Map<string, { path: string; sha: string; type: string }[]>();
@@ -86,9 +91,20 @@ class FakeGithub {
         return send(200, { device_code: 'device-1', user_code: 'WDJB-MJHT', verification_uri: `${this.url}/login/device`, expires_in: 900, interval: 1 });
       }
       if (path === '/login/oauth/access_token') {
+        const expiry = this.expiring ? { expires_in: 28800, refresh_token: this.refresh, refresh_token_expires_in: 15897600 } : {};
+        if (body.grant_type === 'refresh_token') {
+          if (this.refreshRevoked || body.refresh_token !== this.refresh || body.client_id !== 'client-id') {
+            return send(200, { error: 'bad_refresh_token', error_description: 'The refresh token passed is incorrect or expired.' });
+          }
+          // A refresh token works once: both tokens are replaced.
+          this.renewals++;
+          this.token = 'ghu_' + randomBytes(12).toString('hex');
+          this.refresh = 'ghr_' + randomBytes(12).toString('hex');
+          return send(200, { access_token: this.token, token_type: 'bearer', scope: 'repo', expires_in: 28800, refresh_token: this.refresh, refresh_token_expires_in: 15897600 });
+        }
         if (this.approved === 'no') return send(200, { error: 'authorization_pending' });
         if (this.approved === 'denied') return send(200, { error: 'access_denied' });
-        return send(200, { access_token: this.token, token_type: 'bearer', scope: 'repo' });
+        return send(200, { access_token: this.token, token_type: 'bearer', scope: 'repo', ...expiry });
       }
       if (this.revoked || req.headers.authorization !== `Bearer ${this.token}`) return send(401, { message: 'Bad credentials' });
       if (path === '/user' && req.method === 'GET') return send(200, { id: 42, login: 'ada', name: 'Ada Lovelace' });
@@ -332,6 +348,118 @@ describe('saving projects to GitHub', () => {
     assert.equal(res.body.error.code, 'github_not_linked');
     assert.equal((await t.api.get('/api/github', ada.token)).body.account, null);
     gh.revoked = false;
+  });
+});
+
+describe('a link that expires and renews itself', () => {
+  const gh = new FakeGithub();
+  let t: TestApp;
+  let ada = { token: '', id: '', email: '' };
+  let projectId = '';
+
+  before(async () => {
+    gh.expiring = true;
+    gh.approved = 'yes';
+    await gh.start();
+    t = await createTestApp({ GITHUB_CLIENT_ID: 'client-id', SECRETS_KEY: KEY, GITHUB_API_URL: gh.url, GITHUB_URL: gh.url });
+    ada = await signUp(t, 'ada');
+    projectId = await newProject(t, ada.token, 'Renewed');
+  });
+  after(async () => {
+    await t.destroy();
+    await gh.stop();
+  });
+
+  const link = async () => {
+    const start = await t.api.post('/api/github/link', undefined, ada.token);
+    await wait(1100);
+    return t.api.post(`/api/github/link/${start.body.linkId}`, undefined, ada.token);
+  };
+  const stored = async () =>
+    (await t.db.query<{ token_enc: string; refresh_enc: string | null; token_expires_at: Date | null; refresh_expires_at: Date | null }>(
+      'SELECT token_enc, refresh_enc, token_expires_at, refresh_expires_at FROM github_accounts',
+    )).rows[0];
+  const nearlyOut = () => t.db.query(`UPDATE github_accounts SET token_expires_at = now() + interval '1 minute'`);
+
+  it('keeps both tokens sealed and says when the link would lapse', async () => {
+    const first = gh.token;
+    const firstRefresh = gh.refresh;
+    const done = await link();
+    assert.equal(done.body.status, 'linked');
+    const lapses = new Date(done.body.account.lapsesAt).getTime();
+    assert.ok(lapses > Date.now() + 150 * 86_400_000 && lapses < Date.now() + 200 * 86_400_000, 'about six months from now');
+
+    const row = (await stored())!;
+    assert.ok(row.refresh_enc && !row.refresh_enc.includes(firstRefresh));
+    assert.ok(!row.token_enc.includes(first));
+    assert.ok(row.token_expires_at!.getTime() > Date.now() + 7 * 3_600_000);
+    // The refresh token is sealed for its role: it does not open as the access token would.
+    const key = Buffer.from(KEY, 'base64');
+    assert.equal(unseal(key, row.refresh_enc!, ada.id), null);
+    assert.equal(unseal(key, row.refresh_enc!, `${ada.id}/refresh`), firstRefresh);
+    assert.ok(!JSON.stringify(done.body).includes(firstRefresh));
+  });
+
+  it('uses a token that still has time left as it is', async () => {
+    const res = await t.api.post(`/api/projects/${projectId}/github`, { name: 'renewed' }, ada.token);
+    assert.equal(res.status, 201);
+    assert.equal(gh.renewals, 0);
+  });
+
+  it('renews a token that is about to run out, once, and carries on', async () => {
+    const old = gh.token;
+    await nearlyOut();
+    await t.api.put(`/api/projects/${projectId}/files/content`, { path: 'main.tex', content: 'A change.\n' }, ada.token);
+    // Two requests arrive together; the refresh token can be used only once.
+    const [a, b] = await Promise.all([
+      t.api.post(`/api/projects/${projectId}/github/save`, { message: 'First' }, ada.token),
+      t.api.get(`/api/projects/${projectId}/github`, ada.token),
+    ]);
+    assert.equal(a.status, 200, JSON.stringify(a.body));
+    assert.equal(b.status, 200);
+    assert.equal(gh.renewals, 1);
+    assert.notEqual(gh.token, old);
+    assert.equal(gh.log('ada/renewed')[0], 'First');
+
+    const row = (await stored())!;
+    assert.ok(row.token_expires_at!.getTime() > Date.now() + 7 * 3_600_000);
+    assert.equal(unseal(Buffer.from(KEY, 'base64'), row.token_enc, ada.id), gh.token);
+    assert.equal(unseal(Buffer.from(KEY, 'base64'), row.refresh_enc!, `${ada.id}/refresh`), gh.refresh);
+    // And with time left again, no further renewal.
+    await t.api.get(`/api/projects/${projectId}/github`, ada.token);
+    assert.equal(gh.renewals, 1);
+  });
+
+  it('lets the link lapse when GitHub will not renew it', async () => {
+    await nearlyOut();
+    gh.refreshRevoked = true;
+    const res = await t.api.post(`/api/projects/${projectId}/github/save`, { message: 'Too late' }, ada.token);
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error.code, 'github_not_linked');
+    assert.match(res.body.error.message, /run out/);
+    assert.equal((await t.api.get('/api/github', ada.token)).body.account, null);
+    assert.equal((await t.db.query('SELECT 1 FROM github_accounts')).rowCount, 0);
+    gh.refreshRevoked = false;
+  });
+
+  it('lets the link lapse when the refresh token itself has run out, without asking GitHub', async () => {
+    assert.equal((await link()).body.status, 'linked');
+    await t.db.query(`UPDATE github_accounts SET token_expires_at = now() - interval '1 hour', refresh_expires_at = now() - interval '1 minute'`);
+    const before = gh.renewals;
+    const res = await t.api.post(`/api/projects/${projectId}/github/save`, {}, ada.token);
+    assert.equal(res.body.error.code, 'github_not_linked');
+    assert.equal(gh.renewals, before);
+  });
+
+  it('keeps the link when GitHub cannot be reached for a renewal', async () => {
+    assert.equal((await link()).body.status, 'linked');
+    await nearlyOut();
+    await gh.stop();
+    const res = await t.api.post(`/api/projects/${projectId}/github/save`, {}, ada.token);
+    assert.equal(res.status, 503);
+    assert.equal(res.body.error.code, 'github_unreachable');
+    assert.equal((await t.db.query('SELECT 1 FROM github_accounts')).rowCount, 1);
+    await gh.start();
   });
 });
 

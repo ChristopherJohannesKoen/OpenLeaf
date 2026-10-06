@@ -33,6 +33,10 @@ export class Github {
   ) {}
 
   private async call<T>(method: string, url: string, body?: unknown, form = false): Promise<T> {
+    return (await this.request(method, url, body, form)).data as T;
+  }
+
+  private async request(method: string, url: string, body?: unknown, form = false): Promise<{ data: unknown; headers: Headers }> {
     const headers: Record<string, string> = {
       Accept: form ? 'application/json' : 'application/vnd.github+json',
       'User-Agent': `OpenLeaf/${VERSION}`,
@@ -55,7 +59,7 @@ export class Github {
       const said = (data as { message?: string } | null)?.message;
       throw new GithubError(res.status, said ? `GitHub said: ${said}` : `GitHub answered ${res.status}.`, data);
     }
-    return data as T;
+    return { data, headers: res.headers };
   }
 
   private api<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -74,7 +78,7 @@ export class Github {
   }
 
   pollDeviceFlow(deviceCode: string) {
-    return this.call<{ access_token?: string; scope?: string; error?: string; error_description?: string; interval?: number }>(
+    return this.call<TokenAnswer & { interval?: number }>(
       'POST',
       `${this.config.webUrl}/login/oauth/access_token`,
       { client_id: this.config.clientId, device_code: deviceCode, grant_type: 'urn:ietf:params:oauth:grant-type:device_code' },
@@ -82,8 +86,26 @@ export class Github {
     );
   }
 
-  me() {
-    return this.api<{ id: number; login: string; name: string | null }>('GET', '/user');
+  /**
+   * Exchange a refresh token for a new pair. GitHub hands out refresh tokens only when the app
+   * is set to expire its tokens; a token that came from the device flow can be renewed with the
+   * client id alone. The old pair stops working the moment this succeeds.
+   */
+  renew(refreshToken: string) {
+    return this.call<TokenAnswer>(
+      'POST',
+      `${this.config.webUrl}/login/oauth/access_token`,
+      { client_id: this.config.clientId, grant_type: 'refresh_token', refresh_token: refreshToken },
+      true,
+    );
+  }
+
+  /** Who the token belongs to, and (from the response headers) what it has been granted. */
+  async me(): Promise<{ id: number; login: string; name: string | null; scopes: string[] | null }> {
+    const { data, headers } = await this.request('GET', `${this.config.apiUrl}/user`);
+    const granted = headers.get('x-oauth-scopes');
+    const who = data as { id: number; login: string; name: string | null };
+    return { id: who.id, login: who.login, name: who.name, scopes: granted === null ? null : granted.split(/[ ,]+/).filter(Boolean) };
   }
 
   // ---- repositories ----
@@ -130,6 +152,19 @@ export class Github {
   async moveBranch(fullName: string, branch: string, sha: string): Promise<void> {
     await this.api('PATCH', `/repos/${fullName}/git/refs/heads/${encodeURIComponent(branch)}`, { sha, force: false });
   }
+}
+
+/** What GitHub answers when asked for a token. The last three are present only for tokens that expire. */
+export interface TokenAnswer {
+  access_token?: string;
+  scope?: string;
+  error?: string;
+  error_description?: string;
+  /** Seconds until the access token stops working. */
+  expires_in?: number;
+  refresh_token?: string;
+  /** Seconds until the refresh token itself stops working. */
+  refresh_token_expires_in?: number;
 }
 
 export interface Repo {

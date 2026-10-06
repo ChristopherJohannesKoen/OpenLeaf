@@ -9,6 +9,7 @@ import { slugify } from '../../core/util.js';
 import { getProject } from '../projects/store.js';
 import { engineStatuses } from './engines.js';
 import { CompileService, type CompileRow } from './service.js';
+import { noNetwork } from './sandbox.js';
 import { forwardSearch, inverseSearch } from './synctex.js';
 import { removeWorkspace, workspaceFor } from './workspace.js';
 
@@ -101,9 +102,19 @@ export const compileModule: OpenLeafModule = {
       engines: allowed(await engineStatuses()),
       selfTests: compiler.selfTests,
       isolation: {
-        namespaces: compiler.isolation.namespaces,
+        // A compile cannot open a network connection of any kind.
+        noNetwork: noNetwork(compiler.isolation),
+        // It cannot look into, or steer, the service's process or any other.
+        noProcessAccess: compiler.isolation.namespaces || compiler.isolation.syscalls,
+        // It sees only the TeX installation and its own folders.
+        narrowFiles: compiler.isolation.files,
+        // The service's own memory and environment are closed to programs it starts.
+        serviceGuarded: compiler.guarded,
         limits: compiler.isolation.limits,
-        noNewPrivileges: compiler.isolation.noNewPrivileges,
+        noNewPrivileges: compiler.isolation.noNewPrivileges || compiler.isolation.syscalls,
+        // How it is done on this host: namespaces, the launcher, or both.
+        namespaces: compiler.isolation.namespaces,
+        launcher: compiler.isolation.syscalls,
         summary: compiler.describeIsolation(),
       },
     }));
@@ -366,7 +377,10 @@ export const compileModule: OpenLeafModule = {
     if (recovered) root.log.info({ recovered }, 'closed out compiles interrupted by a restart');
 
     const isolation = await compiler.prepareIsolation();
-    root.log.info({ isolation }, `compile isolation: ${compiler.describeIsolation()}`);
+    root.log.info(
+      { isolation: { ...isolation, readPaths: isolation.readPaths.length }, serviceGuarded: compiler.guarded },
+      `compile isolation: ${compiler.describeIsolation()}`,
+    );
 
     const engines = await engineStatuses(true);
     root.log.info(

@@ -30,13 +30,31 @@ function wrap(runner: { query: (text: string, params?: unknown[]) => Promise<pg.
   };
 }
 
+/**
+ * The address without the parameters that say how to do TLS: that is decided once, in the
+ * configuration (`databaseSsl`), and the driver would otherwise let the address overrule it.
+ */
+export function withoutTlsParams(databaseUrl: string): string {
+  try {
+    const u = new URL(databaseUrl);
+    const named = ['sslmode', 'ssl', 'sslcert', 'sslkey', 'sslrootcert', 'uselibpqcompat', 'channel_binding'];
+    // An address that says nothing about TLS is passed on exactly as it was given.
+    if (!named.some((name) => u.searchParams.has(name))) return databaseUrl;
+    for (const name of named) u.searchParams.delete(name);
+    return u.toString();
+  } catch {
+    return databaseUrl;
+  }
+}
+
 export function createDb(config: Pick<Config, 'databaseUrl' | 'databaseSsl' | 'databasePoolSize'>): Db {
   const pool = new pg.Pool({
-    connectionString: config.databaseUrl,
+    connectionString: withoutTlsParams(config.databaseUrl),
     max: config.databasePoolSize,
+    // Shorter than a hosted database waits before it goes to sleep and drops its connections.
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 15_000,
-    ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
+    ssl: config.databaseSsl === 'off' ? false : { rejectUnauthorized: config.databaseSsl === 'verify' },
   });
   // An idle client erroring (e.g. the database restarting) must not crash the process.
   pool.on('error', (err) => {

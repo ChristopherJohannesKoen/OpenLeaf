@@ -56,6 +56,9 @@ export async function createTestApp(env: Record<string, string> = {}, reset = tr
     AUTH_RATE_LIMIT_PER_MINUTE: '100000',
     RATE_LIMIT_PER_MINUTE: '100000',
     COMPILE_TIMEOUT_MS: '240000',
+    // Lets the whole suite be run as on a host without namespaces:
+    //   COMPILE_ISOLATION_SKIP=namespaces npm test
+    ...(process.env.COMPILE_ISOLATION_SKIP ? { COMPILE_ISOLATION_SKIP: process.env.COMPILE_ISOLATION_SKIP } : {}),
     ...env,
     COMPILE_DIR: compileDir,
   });

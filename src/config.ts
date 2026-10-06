@@ -42,7 +42,12 @@ export interface Config {
   trustProxy: boolean | number | string;
 
   databaseUrl: string;
-  databaseSsl: boolean;
+  /**
+   * TLS to the database: `off`; `verify` (encrypted, and the server must present a certificate
+   * that checks out, which is what a database reached over the internet needs); or `no-verify`
+   * (encrypted, certificate not checked: only for a database with a self-signed certificate).
+   */
+  databaseSsl: 'off' | 'verify' | 'no-verify';
   databasePoolSize: number;
 
   registration: RegistrationMode;
@@ -84,10 +89,16 @@ export interface Config {
     /** Largest single file a compile may write, in MB. 0 = no limit. */
     maxFileMb: number;
     /**
-     * Run each compile in its own process, network and mount view, apart from the service:
-     * `auto` when the host allows it, `off` never, `required` refuse to compile without it.
+     * Keep each compile apart from the service (no network, no look into other processes):
+     * `auto` as far as the host allows, `off` never, `required` refuse to compile without it.
      */
     isolation: 'auto' | 'off' | 'required';
+    /** Layers to leave out even where the host offers them: `namespaces`, `launcher`, `files`. */
+    isolationSkip: ('namespaces' | 'launcher' | 'files')[];
+    /** Where the launcher `openleaf-sandbox` is, when it is not on PATH. */
+    sandbox: string | null;
+    /** Further folders a compile may read (an unusual TeX installation, shared style files). */
+    readPaths: string[];
     allowLatexmkrc: boolean;
     /**
      * What documents may run on the server: `restricted` (TeX Live's short safe list, e.g. EPS
@@ -136,24 +147,33 @@ function list(env: NodeJS.ProcessEnv, key: string): string[] {
 }
 
 /**
- * Decide whether the Postgres connection needs TLS.
- * Render's *internal* hostnames (e.g. `dpg-abc123-a`) have no dots and do not
- * use TLS; external hostnames (`….frankfurt-postgres.render.com`) require it.
+ * Decide how the Postgres connection uses TLS.
+ *
+ * A database on this machine or on a private network name without dots (Render's internal
+ * `dpg-abc123-a`) is reached without TLS. Anything else is reached over the internet, so the
+ * connection is encrypted and the server's certificate is checked; hosted databases (Neon,
+ * Supabase, Render's external address) present certificates that pass. `DATABASE_SSL` or an
+ * `sslmode` in the address overrides this: `off`/`disable`, `no-verify`, or `verify`
+ * (any of `require`, `verify-ca`, `verify-full`, `on`).
  */
-function detectSsl(databaseUrl: string, env: NodeJS.ProcessEnv): boolean {
+function detectSsl(databaseUrl: string, env: NodeJS.ProcessEnv): 'off' | 'verify' | 'no-verify' {
+  const named = (v: string): 'off' | 'verify' | 'no-verify' => {
+    const x = v.toLowerCase();
+    if (['0', 'false', 'no', 'off', 'disable'].includes(x)) return 'off';
+    if (x === 'no-verify' || x === 'noverify') return 'no-verify';
+    return 'verify';
+  };
   const explicit = str(env, 'DATABASE_SSL');
-  if (explicit && explicit.toLowerCase() !== 'auto') {
-    return ['1', 'true', 'yes', 'on', 'require'].includes(explicit.toLowerCase());
-  }
+  if (explicit && explicit.toLowerCase() !== 'auto') return named(explicit);
   try {
     const u = new URL(databaseUrl);
     const sslmode = u.searchParams.get('sslmode');
-    if (sslmode) return sslmode !== 'disable';
+    if (sslmode) return named(sslmode);
     const host = u.hostname;
-    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false;
-    return host.includes('.');
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') return 'off';
+    return host.includes('.') ? 'verify' : 'off';
   } catch {
-    return false;
+    return 'off';
   }
 }
 
@@ -173,6 +193,19 @@ function isolationMode(v: string): 'auto' | 'off' | 'required' {
   const x = v.toLowerCase();
   if (x === 'auto' || x === 'off' || x === 'required') return x;
   throw new Error(`Invalid COMPILE_ISOLATION "${v}" (use auto, off or required).`);
+}
+
+function isolationSkip(v: string): ('namespaces' | 'launcher' | 'files')[] {
+  const known = ['namespaces', 'launcher', 'files'] as const;
+  const asked = v
+    .split(',')
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+  const unknown = asked.filter((x) => !(known as readonly string[]).includes(x));
+  if (unknown.length) {
+    throw new Error(`Invalid COMPILE_ISOLATION_SKIP "${v}" (any of: ${known.join(', ')}).`);
+  }
+  return known.filter((k) => asked.includes(k));
 }
 
 /** SECRETS_KEY: 32 bytes as base64 or hex (make one with `openssl rand -base64 32`). */
@@ -311,6 +344,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       memoryMb: int(env, 'COMPILE_MEMORY_MB', 4096),
       maxFileMb: int(env, 'COMPILE_MAX_FILE_MB', 256),
       isolation: isolationMode(str(env, 'COMPILE_ISOLATION', 'auto')!),
+      isolationSkip: isolationSkip(str(env, 'COMPILE_ISOLATION_SKIP') ?? ''),
+      sandbox: str(env, 'COMPILE_SANDBOX') ?? null,
+      readPaths: (str(env, 'COMPILE_READ_PATHS') ?? '')
+        .split(/[,:]/)
+        .map((p) => p.trim())
+        .filter((p) => p.startsWith('/')),
       allowLatexmkrc: bool(env, 'ALLOW_LATEXMKRC', false),
       shellEscape: shellEscapeMode(str(env, 'COMPILE_SHELL_ESCAPE', 'restricted')!),
       startupSelfTest: selfTestMode(str(env, 'STARTUP_SELFTEST', 'default')!),

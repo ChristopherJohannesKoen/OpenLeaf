@@ -43,10 +43,24 @@ export interface SystemInfo {
   compile?: {
     defaultEngine: string; timeoutSeconds: number; engines: EngineStatus[];
     /** How compiles are kept apart from the service on this host. */
-    isolation?: { namespaces: boolean; limits: boolean; noNewPrivileges: boolean; summary: string };
+    isolation?: Isolation;
   };
   templates?: { builtin: string[] };
   github?: { available: boolean; scope: string | null };
+}
+
+/** What stands between a compile and the service that started it. Older services say only the first four. */
+export interface Isolation {
+  namespaces: boolean; limits: boolean; noNewPrivileges: boolean; summary: string;
+  /** A compile cannot open a network connection of any kind. */
+  noNetwork?: boolean;
+  /** It cannot look into the service's process or any other. */
+  noProcessAccess?: boolean;
+  /** It sees only the TeX installation and its own folders. */
+  narrowFiles?: boolean;
+  /** The service's own memory is closed to the programs it starts. */
+  serviceGuarded?: boolean;
+  launcher?: boolean;
 }
 
 /** A place this account is signed in. */
@@ -58,7 +72,11 @@ export interface SessionInfo {
   current: boolean;
 }
 
-export interface GithubAccount { login: string; name: string; scopes: string[]; linkedAt: string }
+export interface GithubAccount {
+  login: string; name: string; scopes: string[]; linkedAt: string;
+  /** The link renews itself as it is used; left unused it lapses on this date. Null: it lasts until unlinked. */
+  lapsesAt?: string | null;
+}
 
 /** Whether the service can save to GitHub, and the account linked to this OpenLeaf account. */
 export interface GithubState { available: boolean; scope: string | null; account: GithubAccount | null }

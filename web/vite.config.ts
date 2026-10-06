@@ -44,13 +44,16 @@ function contentSecurityPolicy(apiUrl: string | undefined): Plugin {
   };
 }
 
-// In development the app calls /api on its own origin and Vite forwards those calls to the
-// OpenLeaf API, so the browser never makes a cross-origin request.
-//   OPENLEAF_API=http://localhost:3000 npm run dev     (an API running on this machine)
-// Without OPENLEAF_API the hosted instance is used.
+// In development the app calls /api on its own origin and Vite forwards those calls to an
+// OpenLeaf API, so the browser never makes a cross-origin request. By default that is an API
+// on this machine (`docker compose up` in the folder above starts one on port 3000):
+//   npm run dev
+//   OPENLEAF_API=http://localhost:4000 npm run dev     (an API somewhere else)
+// A hosted instance that signs people in with Google will not do so from localhost: its
+// sign-in is tied to its own site's address.
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
-  const target = env.OPENLEAF_API || 'https://openleaf-api.onrender.com';
+  const target = env.OPENLEAF_API || 'http://localhost:3000';
   const forward = { target, changeOrigin: true, secure: true };
   return {
     plugins: [react(), contentSecurityPolicy(env.VITE_API_URL)],

@@ -1,4 +1,5 @@
-import { mkdir, readFile as fsReadFile, readdir, rm, stat, writeFile as fsWriteFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, open, readFile as fsReadFile, readdir, rm, stat, writeFile as fsWriteFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Config } from '../../config.js';
 import type { Db } from '../../core/db.js';
@@ -10,7 +11,15 @@ import { sourceFingerprint, type ProjectRow } from '../projects/store.js';
 import { engineStatuses, getEngine, listEngines, type Engine } from './engines.js';
 import { parseBibLog, parseLatexLog, summarize, type Diagnostic } from './log-parser.js';
 import { run } from './runner.js';
-import { describeIsolation, detectIsolation, isolate, NO_ISOLATION, type Isolation } from './sandbox.js';
+import {
+  describeIsolation,
+  detectIsolation,
+  isolate,
+  NO_ISOLATION,
+  noNetwork,
+  serviceGuarded,
+  type Isolation,
+} from './sandbox.js';
 import { removeWorkspace, syncWorkspace, workspaceFor, type Workspace } from './workspace.js';
 
 export type CompileStatus = 'queued' | 'running' | 'success' | 'failure' | 'timeout' | 'error';
@@ -113,13 +122,22 @@ function clip(text: string, max = MAX_LOG_BYTES): string {
   return `${text.slice(0, half)}\n\n[… log truncated …]\n\n${text.slice(-half)}`;
 }
 
-async function readIfFresh(file: string, since: number): Promise<Buffer | null> {
+/**
+ * Read a file the compile left behind. The compile wrote this folder, so nothing in it is
+ * taken on trust: only a plain file is read, and a link is never followed (a link could
+ * point at a file that the service can read and the compile could not).
+ */
+export async function readIfFresh(file: string, since: number): Promise<Buffer | null> {
+  let handle;
   try {
-    const info = await stat(file);
-    if (info.mtimeMs < since) return null;
-    return await fsReadFile(file);
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = await handle.stat();
+    if (!info.isFile() || info.mtimeMs < since) return null;
+    return await handle.readFile();
   } catch {
     return null;
+  } finally {
+    await handle?.close().catch(() => {});
   }
 }
 
@@ -139,6 +157,11 @@ export class CompileService {
   selfTests: SelfTestResult[] = [];
   /** How compiles are kept apart from the service on this host; set by `prepareIsolation`. */
   isolation: Isolation = NO_ISOLATION;
+  /** Whether the service's own memory is closed to the programs it starts (see `serviceGuarded`). */
+  guarded = false;
+  /** Engines that have compiled the test document under the isolation now in force. */
+  private readonly verified = new Set<string>();
+  private readonly selfTestLock = new KeyedMutex();
 
   constructor(
     private readonly db: Db,
@@ -155,29 +178,52 @@ export class CompileService {
 
   /** Find out what isolation this host allows. Called once, before the first compile. */
   async prepareIsolation(): Promise<Isolation> {
-    this.isolation = await detectIsolation(this.config.compile.isolation);
+    // Programs a compile starts by name; where they live has to be readable to it.
+    const binaries = [
+      ...new Set(['latexmk', 'perl', 'kpsewhich', 'bibtex', 'biber', 'makeindex', 'gs', ...listEngines().flatMap((e) => e.binaries)]),
+    ];
+    this.isolation = await detectIsolation(this.config.compile.isolation, {
+      env: await this.texEnv(),
+      binaries,
+      launcher: this.config.compile.sandbox ?? undefined,
+      extraReadPaths: this.config.compile.readPaths,
+      skip: this.config.compile.isolationSkip,
+    });
+    this.guarded = await serviceGuarded();
+    this.verified.clear();
     return this.isolation;
   }
 
   describeIsolation(): string {
-    return describeIsolation(this.isolation);
+    return describeIsolation(this.isolation, this.guarded);
   }
 
-  private wrap(cmd: string, args: string[], iso: Isolation = this.isolation) {
-    return isolate(cmd, args, iso, { memoryMb: this.config.compile.memoryMb, maxFileMb: this.config.compile.maxFileMb });
+  /** The folders every compile shares: a home, TeX's caches, temporary files. */
+  private texDirs(): { home: string; texmfVar: string; tmp: string } {
+    const base = this.config.compile.dir;
+    return { home: path.join(base, 'home'), texmfVar: path.join(base, 'texmf-var'), tmp: path.join(base, 'tmp') };
+  }
+
+  /** Wrap a command for a run in `cwd`: the only folders it may write are that one and the shared three. */
+  private wrap(cmd: string, args: string[], cwd: string, iso: Isolation = this.isolation) {
+    const { home, texmfVar, tmp } = this.texDirs();
+    return isolate(cmd, args, iso, {
+      memoryMb: this.config.compile.memoryMb,
+      maxFileMb: this.config.compile.maxFileMb,
+      writable: [cwd, home, texmfVar, tmp],
+    });
   }
 
   /** A deliberately small environment: the child never sees DATABASE_URL or other secrets. */
   private async texEnv(): Promise<NodeJS.ProcessEnv> {
-    const base = this.config.compile.dir;
-    const home = path.join(base, 'home');
-    const texmfVar = path.join(base, 'texmf-var');
-    const tmp = path.join(base, 'tmp');
+    const { home, texmfVar, tmp } = this.texDirs();
     await Promise.all([home, texmfVar, tmp].map((d) => mkdir(d, { recursive: true })));
     return {
       PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
       HOME: home,
       TEXMFVAR: texmfVar,
+      // Fonts made on demand go with the other caches, not into a shared /tmp.
+      VARTEXFONTS: path.join(texmfVar, 'fonts'),
       TMPDIR: tmp,
       LANG: 'C.UTF-8',
       LC_ALL: 'C.UTF-8',
@@ -218,7 +264,7 @@ export class CompileService {
 
   /** Queue a compile (or reuse an identical finished/running one). */
   async request(project: ProjectRow, userId: string, opts: CompileOptions = {}): Promise<CompileTicket> {
-    if (this.config.compile.isolation === 'required' && !this.isolation.namespaces) {
+    if (this.config.compile.isolation === 'required' && !noNetwork(this.isolation)) {
       throw unavailable(
         'This server is set to compile only in isolation, and the host does not allow it.',
         'isolation_unavailable',
@@ -284,6 +330,11 @@ export class CompileService {
     keyOf: (sourceHash: string) => string,
   ): Promise<void> {
     const releaseProject = await this.projectLocks.acquire(projectId);
+    // The first compile with an engine checks that the engine works inside the file rules,
+    // which differ from host to host; if it does not, the rules are dropped and it says so.
+    if (this.isolation.files && !this.verified.has(engine.id)) {
+      await this.runSelfTest([engine.id], { onlyUnverified: true }).catch(() => []);
+    }
     const releaseSlot = await this.slots.acquire();
     const started = Date.now();
     let status: CompileStatus = 'error';
@@ -302,7 +353,7 @@ export class CompileService {
         stopOnFirstError: options.stopOnFirstError,
         allowRc: this.config.compile.allowLatexmkrc,
       });
-      const wrapped = this.wrap(cmd, args);
+      const wrapped = this.wrap(cmd, args, ws.src);
       const res = await run(wrapped.cmd, wrapped.args, {
         cwd: ws.src,
         env: await this.texEnv(),
@@ -490,90 +541,124 @@ export class CompileService {
    * Compile a tiny built-in document with each given engine to prove the TeX
    * installation works. Results are kept for `GET /api/system/info`.
    */
-  async runSelfTest(engineIds: string[]): Promise<SelfTestResult[]> {
+  async runSelfTest(engineIds: string[], opts: { onlyUnverified?: boolean } = {}): Promise<SelfTestResult[]> {
     const results: SelfTestResult[] = [];
     for (const engineId of engineIds) {
-      const started = Date.now();
-      const result = (ok: boolean, message: string, pdfBytes = 0): SelfTestResult => ({
-        ok,
-        engine: engineId,
-        durationMs: Date.now() - started,
-        pdfBytes,
-        message,
-        at: new Date().toISOString(),
-      });
+      // One self-test at a time: they share a folder per engine and may change the isolation.
+      const releaseTest = await this.selfTestLock.acquire('selftest');
       try {
-        const engine = await this.resolveEngine(engineId);
-        const dir = path.join(this.config.compile.dir, 'selftest', engineId);
-        await rm(dir, { recursive: true, force: true });
-        await mkdir(dir, { recursive: true });
-        // The Unicode engines get a document that exercises fontspec and non-ASCII text.
-        const unicode = engineId === 'xelatex' || engineId === 'lualatex';
-        await fsWriteFile(
-          path.join(dir, 'selftest.tex'),
-          [
-            '\\documentclass{article}',
-            unicode ? '\\usepackage{fontspec}' : '\\usepackage[utf8]{inputenc}\\usepackage[T1]{fontenc}',
-            '\\usepackage{amsmath}',
-            '\\begin{document}',
-            'OpenLeaf self-test (café, naïve): $e^{i\\pi}+1=0$.',
-            '\\end{document}',
-            '',
-          ].join('\n'),
-        );
-        const { cmd, args } = engine.command({
-          mainFile: 'selftest.tex',
-          jobName: 'selftest',
-          stopOnFirstError: true,
-          allowRc: false,
-        });
-        const release = await this.slots.acquire();
-        let res;
-        let pdf: Buffer | null;
-        try {
-          const attempt = async (iso: Isolation) => {
-            const wrapped = this.wrap(cmd, args, iso);
-            const r = await run(wrapped.cmd, wrapped.args, { cwd: dir, env: await this.texEnv(), timeoutMs: this.config.compile.timeoutMs });
-            const out = await fsReadFile(path.join(dir, 'selftest.pdf')).catch(() => null);
-            return { r, out, ok: r.exitCode === 0 && out !== null && out.byteLength > 0 };
-          };
-          let first = await attempt(this.isolation);
-          // A host can accept the isolation and still break TeX inside it. If the same document
-          // compiles without it, carry on without it (unless isolation is required) and say so.
-          if (!first.ok && (this.isolation.namespaces || this.isolation.limits) && this.config.compile.isolation !== 'required') {
-            await rm(path.join(dir, 'selftest.pdf'), { force: true });
-            const plain = await attempt(NO_ISOLATION);
-            if (plain.ok) {
-              this.log.error(
-                { engine: engineId, was: describeIsolation(this.isolation), output: first.r.output.slice(-400) },
-                'compiles fail inside the isolation on this host; continuing without it',
-              );
-              this.isolation = NO_ISOLATION;
-              first = plain;
-            }
-          }
-          res = first.r;
-          pdf = first.out;
-        } finally {
-          release();
-        }
-        await rm(dir, { recursive: true, force: true });
-        if (res.exitCode === 0 && pdf && pdf.byteLength > 0) {
-          results.push(result(true, 'Compiled a test document successfully.', pdf.byteLength));
-        } else {
-          results.push(
-            result(
-              false,
-              res.spawnError ?? (res.timedOut ? 'Timed out.' : `Exit code ${res.exitCode}: ${res.output.slice(-600)}`),
-            ),
-          );
-        }
-      } catch (err) {
-        results.push(result(false, (err as Error).message));
+        if (opts.onlyUnverified && this.verified.has(engineId)) continue;
+        results.push(await this.selfTestOne(engineId));
+        this.verified.add(engineId);
+      } finally {
+        releaseTest();
       }
       this.selfTests = [...this.selfTests.filter((r) => r.engine !== engineId), results[results.length - 1]!];
     }
     return results;
+  }
+
+  /**
+   * The isolation now in force, then the same with one layer fewer each time. A host can
+   * accept a layer and still break TeX inside it; the self-test walks down this list until
+   * the test document compiles. With isolation required, it stops before the network opens.
+   */
+  private fallbacks(): Isolation[] {
+    const now = this.isolation;
+    const steps: Isolation[] = [now];
+    if (now.files) steps.push({ ...now, files: false, readPaths: [] });
+    if (now.syscalls) steps.push({ ...now, files: false, readPaths: [], syscalls: false, launcher: null });
+    steps.push(NO_ISOLATION);
+    const seen = new Set<string>();
+    return steps.filter((step, i) => {
+      const key = JSON.stringify(step);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return i === 0 || this.config.compile.isolation !== 'required' || noNetwork(step);
+    });
+  }
+
+  private async selfTestOne(engineId: string): Promise<SelfTestResult> {
+    const started = Date.now();
+    const result = (ok: boolean, message: string, pdfBytes = 0): SelfTestResult => ({
+      ok,
+      engine: engineId,
+      durationMs: Date.now() - started,
+      pdfBytes,
+      message,
+      at: new Date().toISOString(),
+    });
+    try {
+      const engine = await this.resolveEngine(engineId);
+      const dir = path.join(this.config.compile.dir, 'selftest', engineId);
+      await rm(dir, { recursive: true, force: true });
+      await mkdir(dir, { recursive: true });
+      // The Unicode engines get a document that exercises fontspec and non-ASCII text.
+      const unicode = engineId === 'xelatex' || engineId === 'lualatex';
+      await fsWriteFile(
+        path.join(dir, 'selftest.tex'),
+        [
+          '\\documentclass{article}',
+          unicode ? '\\usepackage{fontspec}' : '\\usepackage[utf8]{inputenc}\\usepackage[T1]{fontenc}',
+          '\\usepackage{amsmath}',
+          '\\begin{document}',
+          'OpenLeaf self-test (café, naïve): $e^{i\\pi}+1=0$.',
+          '\\end{document}',
+          '',
+        ].join('\n'),
+      );
+      const { cmd, args } = engine.command({
+        mainFile: 'selftest.tex',
+        jobName: 'selftest',
+        stopOnFirstError: true,
+        allowRc: false,
+      });
+      const release = await this.slots.acquire();
+      let res;
+      let pdf: Buffer | null;
+      try {
+        const attempt = async (iso: Isolation) => {
+          await rm(path.join(dir, 'selftest.pdf'), { force: true });
+          const wrapped = this.wrap(cmd, args, dir, iso);
+          const r = await run(wrapped.cmd, wrapped.args, { cwd: dir, env: await this.texEnv(), timeoutMs: this.config.compile.timeoutMs });
+          const out = await readIfFresh(path.join(dir, 'selftest.pdf'), 0);
+          return { r, out, ok: r.exitCode === 0 && out !== null && out.byteLength > 0 };
+        };
+        const steps = this.fallbacks();
+        const first = await attempt(steps[0]!);
+        let chosen = first;
+        for (let i = 1; !chosen.ok && i < steps.length; i++) {
+          const next = await attempt(steps[i]!);
+          if (!next.ok) continue;
+          this.log.error(
+            {
+              engine: engineId,
+              was: describeIsolation(this.isolation, this.guarded),
+              now: describeIsolation(steps[i]!, this.guarded),
+              output: first.r.output.slice(-400),
+            },
+            'compiles fail inside the isolation on this host; continuing with less of it',
+          );
+          this.isolation = steps[i]!;
+          this.verified.clear();
+          chosen = next;
+        }
+        res = chosen.r;
+        pdf = chosen.out;
+      } finally {
+        release();
+      }
+      await rm(dir, { recursive: true, force: true });
+      if (res.exitCode === 0 && pdf && pdf.byteLength > 0) {
+        return result(true, 'Compiled a test document successfully.', pdf.byteLength);
+      }
+      return result(
+        false,
+        res.spawnError ?? (res.timedOut ? 'Timed out.' : `Exit code ${res.exitCode}: ${res.output.slice(-600)}`),
+      );
+    } catch (err) {
+      return result(false, (err as Error).message);
+    }
   }
 
   /** After a restart nothing is running any more; close out rows that say otherwise. */

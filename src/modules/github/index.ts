@@ -8,7 +8,7 @@ import type { OpenLeafModule } from '../../core/modules.js';
 import { seal, unseal } from '../../core/secrets.js';
 import { slugify } from '../../core/util.js';
 import { getProject, readAllFiles, sourceFingerprint } from '../projects/store.js';
-import { Github, GithubError, type Repo } from './client.js';
+import { Github, GithubError, type Repo, type TokenAnswer } from './client.js';
 
 const TAG = 'GitHub';
 
@@ -20,6 +20,11 @@ interface AccountRow {
   token_enc: string;
   scopes: string;
   linked_at: Date;
+  /** When the token stops working; null for a token that does not expire. */
+  token_expires_at: Date | null;
+  /** The token that buys the next one, encrypted like the first; null when tokens do not expire. */
+  refresh_enc: string | null;
+  refresh_expires_at: Date | null;
 }
 
 interface RepoRow {
@@ -51,8 +56,22 @@ export function gitBlobSha(data: Buffer): string {
 }
 
 function accountJson(a: AccountRow) {
-  return { login: a.login, name: a.name, scopes: a.scopes.split(/[ ,]+/).filter(Boolean), linkedAt: a.linked_at };
+  return {
+    login: a.login,
+    name: a.name,
+    scopes: a.scopes.split(/[ ,]+/).filter(Boolean),
+    linkedAt: a.linked_at,
+    // With tokens that expire: the link renews itself whenever it is used, and lapses for good
+    // on this date if it is not used before then. Null: the link lasts until it is unlinked.
+    lapsesAt: a.refresh_expires_at,
+  };
 }
+
+/** Renew a token this long before it runs out, so that a save never starts with a dying one. */
+const RENEW_MARGIN_MS = 5 * 60_000;
+
+const inSeconds = (seconds: number | undefined): Date | null =>
+  typeof seconds === 'number' && seconds > 0 ? new Date(Date.now() + seconds * 1000) : null;
 
 export const githubModule: OpenLeafModule = {
   name: 'github',
@@ -85,6 +104,15 @@ export const githubModule: OpenLeafModule = {
         );
       `,
     },
+    {
+      id: '002_token_renewal',
+      sql: `
+        ALTER TABLE github_accounts
+          ADD COLUMN token_expires_at   timestamptz,
+          ADD COLUMN refresh_enc        text,
+          ADD COLUMN refresh_expires_at timestamptz;
+      `,
+    },
   ],
 
   register(root, { db, config, info }) {
@@ -109,15 +137,73 @@ export const githubModule: OpenLeafModule = {
       return (await q.query<AccountRow>('SELECT * FROM github_accounts WHERE user_id = $1', [userId])).rows[0] ?? null;
     }
 
+    /** What is stored for a token answer: both tokens sealed, each bound to its owner and its role. */
+    function sealed(key: Buffer, userId: string, answer: TokenAnswer) {
+      return {
+        token: seal(key, answer.access_token!, userId),
+        tokenExpiresAt: inSeconds(answer.expires_in),
+        refresh: answer.refresh_token ? seal(key, answer.refresh_token, `${userId}/refresh`) : null,
+        refreshExpiresAt: answer.refresh_token ? inSeconds(answer.refresh_token_expires_in) : null,
+      };
+    }
+
+    async function forget(userId: string): Promise<void> {
+      await db.query('DELETE FROM github_accounts WHERE user_id = $1', [userId]);
+    }
+
+    const lapsed = () =>
+      conflict('The link to GitHub has run out. Link the account again (Modules, Connections).', 'github_not_linked');
+
+    // One renewal at a time per person: a refresh token can be used once, so two requests
+    // arriving together must share the answer rather than race for it.
+    const renewing = new Map<string, Promise<string>>();
+
+    async function renew(row: AccountRow): Promise<string> {
+      const { github, key } = settings();
+      const refresh = row.refresh_enc ? unseal(key, row.refresh_enc, `${row.user_id}/refresh`) : null;
+      if (!refresh || (row.refresh_expires_at && row.refresh_expires_at.getTime() <= Date.now())) {
+        await forget(row.user_id);
+        throw lapsed();
+      }
+      let answer: TokenAnswer;
+      try {
+        answer = await new Github(github).renew(refresh);
+      } catch (err) {
+        // GitHub could not be reached or is refusing for now: the link itself is not at fault.
+        return explain(err, row.user_id, 'renew the link');
+      }
+      if (answer.error || !answer.access_token) {
+        // GitHub will not renew it: it was revoked there, or it ran out.
+        await forget(row.user_id);
+        throw lapsed();
+      }
+      const next = sealed(key, row.user_id, answer);
+      await db.query(
+        `UPDATE github_accounts
+            SET token_enc = $2, token_expires_at = $3, refresh_enc = $4, refresh_expires_at = $5
+          WHERE user_id = $1`,
+        [row.user_id, next.token, next.tokenExpiresAt, next.refresh, next.refreshExpiresAt],
+      );
+      return answer.access_token;
+    }
+
     /** A client that acts as this person on GitHub, or a 409 saying the account must be linked. */
     async function clientFor(userId: string): Promise<Github> {
       const { github, key } = settings();
       const row = await account(db, userId);
-      const token = row ? unseal(key, row.token_enc, userId) : null;
+      let token = row ? unseal(key, row.token_enc, userId) : null;
       if (!row || !token) {
         // A stored token that no longer opens (the key was changed) is of no use; forget it.
-        if (row) await db.query('DELETE FROM github_accounts WHERE user_id = $1', [userId]);
+        if (row) await forget(userId);
         throw conflict('Link a GitHub account first (Modules, Connections).', 'github_not_linked');
+      }
+      if (row.token_expires_at && row.token_expires_at.getTime() - Date.now() < RENEW_MARGIN_MS) {
+        let running = renewing.get(userId);
+        if (!running) {
+          running = renew(row).finally(() => renewing.delete(userId));
+          renewing.set(userId, running);
+        }
+        token = await running;
       }
       return new Github(github, token);
     }
@@ -324,24 +410,29 @@ export const githubModule: OpenLeafModule = {
         }
         pending.delete(req.params.linkId);
 
-        const granted = (answer.scope ?? '').split(/[ ,]+/).filter(Boolean);
-        if (!granted.includes(github.scope) && !(github.scope === 'public_repo' && granted.includes('repo'))) {
-          throw conflict(`GitHub did not grant the "${github.scope}" permission, so nothing was linked.`, 'github_scope_missing');
-        }
         let me;
         try {
           me = await new Github(github, answer.access_token).me();
         } catch (err) {
           return explain(err, user.id, 'read the GitHub account');
         }
+        // What was granted: as the token answer says, or failing that as GitHub reports for the token.
+        const granted = answer.scope ? answer.scope.split(/[ ,]+/).filter(Boolean) : (me.scopes ?? []);
+        if (!granted.includes(github.scope) && !(github.scope === 'public_repo' && granted.includes('repo'))) {
+          throw conflict(`GitHub did not grant the "${github.scope}" permission, so nothing was linked.`, 'github_scope_missing');
+        }
+        const kept = sealed(key, user.id, answer);
         const row = await db.query<AccountRow>(
-          `INSERT INTO github_accounts (user_id, github_id, login, name, token_enc, scopes)
-           VALUES ($1, $2, $3, $4, $5, $6)
+          `INSERT INTO github_accounts
+             (user_id, github_id, login, name, token_enc, scopes, token_expires_at, refresh_enc, refresh_expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            ON CONFLICT (user_id) DO UPDATE
              SET github_id = EXCLUDED.github_id, login = EXCLUDED.login, name = EXCLUDED.name,
-                 token_enc = EXCLUDED.token_enc, scopes = EXCLUDED.scopes, linked_at = now()
+                 token_enc = EXCLUDED.token_enc, scopes = EXCLUDED.scopes, linked_at = now(),
+                 token_expires_at = EXCLUDED.token_expires_at, refresh_enc = EXCLUDED.refresh_enc,
+                 refresh_expires_at = EXCLUDED.refresh_expires_at
            RETURNING *`,
-          [user.id, me.id, me.login, me.name ?? '', seal(key, answer.access_token, user.id), granted.join(' ')],
+          [user.id, me.id, me.login, me.name ?? '', kept.token, granted.join(' '), kept.tokenExpiresAt, kept.refresh, kept.refreshExpiresAt],
         );
         return { status: 'linked' as const, account: accountJson(row.rows[0]!) };
       },

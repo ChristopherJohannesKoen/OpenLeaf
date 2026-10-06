@@ -23,6 +23,8 @@ export interface RunResult {
 /**
  * Run a program with a hard time limit. The child gets its own process group
  * so that on timeout the whole tree (latexmk -> pdflatex -> bibtex…) is killed.
+ * The group is also ended when the program itself exits, so that nothing it
+ * started lives on to write in the folder after the result has been read.
  */
 export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunResult> {
   const started = Date.now();
@@ -87,6 +89,7 @@ export function run(cmd: string, args: string[], opts: RunOptions): Promise<RunR
     };
 
     child.on('error', (err) => finish({ spawnError: err.message }));
+    child.on('exit', killTree);
     child.on('close', (exitCode, signal) => finish({ exitCode, signal }));
   });
 }

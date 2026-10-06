@@ -1,5 +1,11 @@
-# Render Blueprint: recreates the whole of OpenLeaf (database, API and the web front end) in one go.
+# Render Blueprint: recreates OpenLeaf (the API and the web front end) in one go.
 # Dashboard -> New -> Blueprint -> pick this repository.
+#
+# The database is not made here. OpenLeaf needs the address of a PostgreSQL database and
+# nothing more, and Render's free database is deleted 30 days after it is created. Use one
+# that stays (Neon's free plan, a paid Render database, your own server) and paste its
+# connection string as DATABASE_URL when the Blueprint asks for it. A database reached over
+# the internet is used with TLS and its certificate is checked.
 #
 # The API and the site are two services on two addresses, and each has to know the other's:
 #   * the site is built with VITE_API_URL = the API's address;
@@ -7,17 +13,22 @@
 # Render adds a few letters to a name that is already taken (openleaf -> openleaf-cw3y),
 # so after the first deploy check both addresses below against the dashboard.
 #
-# Plans: `free` works but has limits worth knowing about —
-#   * the free database is deleted 30 days after creation unless upgraded;
-#   * the free web service sleeps after 15 idle minutes and has 0.1 CPU / 512 MB.
-# Change the two `plan:` lines to upgrade.
-
-databases:
-  - name: openleaf-db
-    plan: free
-    region: frankfurt
-    databaseName: openleaf
-    user: openleaf
+# Plans: `free` works but has limits worth knowing about: the free web service sleeps after
+# 15 idle minutes and has 0.1 CPU / 512 MB. Change the `plan:` line to upgrade.
+#
+# To keep the database on Render instead, add
+#
+#   databases:
+#     - name: openleaf-db
+#       plan: basic-256mb        # `free` is deleted after 30 days
+#       region: frankfurt
+#       databaseName: openleaf
+#       user: openleaf
+#
+# and replace `sync: false` under DATABASE_URL with
+#       fromDatabase:
+#         name: openleaf-db
+#         property: connectionString
 
 services:
   - type: web
@@ -33,10 +44,9 @@ services:
       ignoredPaths:
         - web/**
     envVars:
+      # A secret: it contains the database password.
       - key: DATABASE_URL
-        fromDatabase:
-          name: openleaf-db
-          property: connectionString
+        sync: false
       # Whoever knows this code can create an account. Read it in the dashboard after the first deploy.
       - key: INVITE_CODE
         generateValue: true

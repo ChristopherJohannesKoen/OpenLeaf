@@ -60,15 +60,22 @@ Design choices worth knowing:
   stored in the database too, so nothing is lost when the server restarts or
   its disk is wiped (which happens on every deploy on most hosts). The compile
   folder on disk is only a cache that makes repeat compiles fast.
-- **Compiles are kept apart from the service.** LaTeX runs as a non-root user
-  with a minimal environment (it never sees `DATABASE_URL`), cannot read or
-  write outside the project folder (`openin_any=p`), may only run TeX Live's
-  short list of safe helper programs, ignores `latexmkrc`, has memory and
-  file-size ceilings, and is killed (whole process tree) after a time limit.
-  Where the host allows unprivileged namespaces, each compile also gets its own
-  process, network and mount view: it cannot see the service's process and has
-  no network at all. `GET /api/system/info` reports what is in force. See
-  [`SECURITY.md`](SECURITY.md).
+- **Compiles are kept apart from the service.** LaTeX is a programming
+  language, so a project's files are treated as untrusted. TeX's own switches
+  come first: a minimal environment (it never sees `DATABASE_URL`), no reading
+  or writing outside the project folder (`openin_any=p`), only TeX Live's short
+  list of safe helper programs, `latexmkrc` ignored, a time limit. Under them,
+  the operating system: every compile is started through a small launcher
+  (`native/sandbox.c`) that leaves it **no network of any kind**, no way to look
+  into another process, and (on kernels with Landlock) a view of the file system
+  that holds only the TeX installation and its own folders; it has memory and
+  file-size ceilings; and the service itself is started with a guard
+  (`native/guard.c`) that closes its memory and environment to the programs it
+  starts. None of this needs privileges or namespaces, so it works on container
+  hosts that allow neither; where namespaces are allowed they are used as well.
+  The service checks at start-up what the host supports, drops a layer only if
+  TeX cannot compile inside it, and reports the result in
+  `GET /api/system/info`. See [`SECURITY.md`](SECURITY.md).
 - **Saving is conflict-safe.** Every file has a version number; send the one
   you loaded as `baseVersion` and a stale save is rejected with `409` instead
   of silently overwriting newer work.
@@ -134,40 +141,53 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-By default the dev server forwards `/api` to the hosted instance, so the API does
-not have to run on your computer; set `OPENLEAF_API=http://localhost:3000` to use
-a local one. The sign-in screen also offers a sample library that needs no
-service at all. Details are in [`web/README.md`](web/README.md).
+The dev server forwards `/api` to an API on this machine (`http://localhost:3000`;
+set `OPENLEAF_API` for another address). The sign-in screen also offers a sample
+library that needs no service at all. Details are in
+[`web/README.md`](web/README.md).
+
+A hosted instance that signs people in with Google cannot be used from a
+development server: Google sign-in is tied to the hosted site's own address. So
+develop against a local API, which signs in with an email and password.
 
 ## Running the API locally
 
-You need Node 22+, PostgreSQL 13+, and a TeX installation with `latexmk`.
+The short way, with Docker (PostgreSQL and TeX Live included):
+
+```bash
+docker compose up --build     # http://localhost:3000/docs
+```
+
+The first account made becomes the owner. `docker compose down -v` throws the
+local data away.
+
+Without Docker you need Node 22+, PostgreSQL 13+, and a TeX installation with
+`latexmk`:
 
 ```bash
 npm install
 cp .env.example .env          # set DATABASE_URL
 export $(grep -v '^#' .env | xargs)
+npm run build:native          # Linux, optional: the launcher and the guard (needs a C compiler)
 npm run dev                   # http://localhost:3000/docs
 ```
 
-Or with Docker (TeX Live included):
-
-```bash
-docker build -t openleaf .
-docker run -p 10000:10000 -e PORT=10000 -e DATABASE_URL=postgres://… openleaf
-```
+`npm run build && npm run selftest` compiles a test document with every engine
+inside whatever isolation the machine offers and prints the result.
 
 Tests use a real database and real LaTeX:
 
 ```bash
 TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/openleaf_test npm test
+COMPILE_ISOLATION_SKIP=namespaces npm test    # as on a host without namespaces
 ```
 
 ## Deploying on Render
 
-`render.yaml` is a Blueprint that creates the database, the API and the front
-end and wires them together: **Dashboard → New → Blueprint →** pick this
-repository. Migrations run automatically at start-up.
+`render.yaml` is a Blueprint that creates the API and the front end and wires
+them together: **Dashboard → New → Blueprint →** pick this repository. It asks
+for `DATABASE_URL`: the connection string of a PostgreSQL database that stays
+(see below). Migrations run automatically at start-up.
 
 The hosted instance of this repository:
 
@@ -188,11 +208,18 @@ repository (Render → Account settings → Git providers). Until then, deploy b
 hand after a push: **Manual Deploy → Deploy latest commit** on each service.
 A private repository needs the same connection before Render can read it at all.
 
+**The database.** OpenLeaf needs a PostgreSQL address and nothing else, so the
+database can live anywhere. Render's own free database is deleted 30 days after
+it is created, which makes it unfit for anything you want to keep. The hosted
+instance uses [Neon](https://neon.com)'s free plan instead, which does not
+expire: create a project there (same region as the API, Frankfurt), copy its
+connection string, and set it as `DATABASE_URL` on the API. A database reached
+over the internet is used with TLS and its certificate is checked. Neon puts an
+idle database to sleep and wakes it on the next connection, which adds a second
+or so to the first request after a pause.
+
 Things to know about Render's free plans:
 
-- **The free PostgreSQL database is deleted 30 days after it is created** unless
-  it is upgraded to a paid plan. Download a backup
-  (`GET /api/export/projects.zip`) regularly, or upgrade the database.
 - The free web service sleeps after 15 minutes without requests (the next
   request takes about a minute) and has 0.1 CPU / 512 MB, so compiles are
   several times slower than on a laptop. The Starter plan removes both limits.
@@ -207,6 +234,7 @@ The ones you are most likely to touch:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE_URL` | — | Postgres connection string (required) |
+| `DATABASE_SSL` | by address | TLS to the database. Default: none for this machine or a private name without dots, otherwise encrypted with the certificate checked. `off`, `verify`, or `no-verify` (a self-signed certificate) |
 | `REGISTRATION` | `first-user`, or `invite` if `INVITE_CODE` is set | Who may create accounts: `first-user`, `invite`, `open`, `closed` |
 | `INVITE_CODE` | — | Secret needed to register in `invite` mode |
 | `SESSION_TTL_DAYS` / `SESSION_MAX_DAYS` | `30` / `90` | A session ends this long after its last use / after it was made |
@@ -220,7 +248,9 @@ The ones you are most likely to touch:
 | `COMPILE_TIMEOUT_MS` | `180000` | Hard limit per compile |
 | `COMPILE_SHELL_ESCAPE` | `restricted` | `off`, `restricted` or `full` (needed by `minted`; trusted users only) |
 | `COMPILE_ENGINES` | all installed | Which engines people may use, e.g. `pdflatex,xelatex` |
-| `COMPILE_ISOLATION` | `auto` | `auto`: isolate compiles when the host allows; `required`: refuse to compile otherwise; `off` |
+| `COMPILE_ISOLATION` | `auto` | `auto`: keep compiles apart from the service as far as the host allows; `required`: refuse to compile unless at least the network is cut; `off` |
+| `COMPILE_ISOLATION_SKIP` | — | Layers to leave out even where they work: `namespaces`, `launcher`, `files` |
+| `COMPILE_READ_PATHS` | — | Further folders a compile may read (a TeX installation in an unusual place, shared style files) |
 | `ALLOW_LATEXMKRC` | `false` | Honour a project's `latexmkrc` (it can run arbitrary code) |
 | `MAX_UPLOAD_BYTES` / `MAX_PROJECT_BYTES` | 25 MB / 150 MB | Size limits |
 
@@ -266,7 +296,11 @@ To switch it on for an instance:
 1. On GitHub: **Settings → Developer settings → OAuth Apps → New OAuth App**.
    Any name; homepage and callback URL can both be your front end's address
    (the callback is not used). After creating it, tick **Enable Device Flow**.
-   No client secret is needed.
+   No client secret is needed. Leave **Expire user access tokens** on (or opt
+   in under the app's optional features): OpenLeaf then holds a token that
+   lasts eight hours and renews it by itself each time it is used; a link left
+   unused for six months lapses. With expiry off the token lasts until it is
+   unlinked or revoked.
 2. Set `GITHUB_CLIENT_ID` to the app's client id and `SECRETS_KEY` to 32 random
    bytes (`openssl rand -base64 32`). The key encrypts the stored GitHub
    tokens; if it is lost or changed, people simply link again.

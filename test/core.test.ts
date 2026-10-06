@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { loadConfig } from '../src/config.js';
+import { withoutTlsParams } from '../src/core/db.js';
 import { resolveModules, type OpenLeafModule } from '../src/core/modules.js';
 import { looksLikeText, normalizePath, parentFolders } from '../src/core/paths.js';
 import { deepDefaults, latexEscape, mergePatch } from '../src/core/util.js';
@@ -64,9 +65,39 @@ describe('config', () => {
   it('picks invite mode when an invite code is set, and detects TLS', () => {
     const c = loadConfig({ DATABASE_URL: 'postgres://u:p@dpg-abc.frankfurt-postgres.render.com/db', INVITE_CODE: 'x' });
     assert.equal(c.registration, 'invite');
-    assert.equal(c.databaseSsl, true);
-    assert.equal(loadConfig({ DATABASE_URL: 'postgres://u:p@dpg-abc-a/db' }).databaseSsl, false);
+    assert.equal(c.databaseSsl, 'verify');
+    assert.equal(loadConfig({ DATABASE_URL: 'postgres://u:p@dpg-abc-a/db' }).databaseSsl, 'off');
     assert.equal(loadConfig({ DATABASE_URL: 'postgres://u:p@dpg-abc-a/db' }).registration, 'first-user');
+  });
+});
+
+describe('TLS to the database', () => {
+  const ssl = (url: string, extra: Record<string, string> = {}) => loadConfig({ DATABASE_URL: url, ...extra }).databaseSsl;
+
+  it('checks the certificate of a database reached over the internet', () => {
+    assert.equal(ssl('postgresql://u:p@ep-cool-name-123456.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'), 'verify');
+    assert.equal(ssl('postgres://u:p@db.example.org:5432/openleaf'), 'verify');
+    assert.equal(ssl('postgres://u:p@db.example.org/openleaf?sslmode=verify-full'), 'verify');
+  });
+
+  it('uses none on this machine or a private name, and does as it is told otherwise', () => {
+    assert.equal(ssl('postgres://postgres@localhost:5432/openleaf'), 'off');
+    assert.equal(ssl('postgres://postgres@127.0.0.1/openleaf'), 'off');
+    assert.equal(ssl('postgres://u:p@db.example.org/openleaf?sslmode=disable'), 'off');
+    assert.equal(ssl('postgres://u:p@db.example.org/openleaf?sslmode=no-verify'), 'no-verify');
+    assert.equal(ssl('postgres://u:p@db.example.org/openleaf?sslmode=require', { DATABASE_SSL: 'no-verify' }), 'no-verify');
+    assert.equal(ssl('postgres://u:p@dpg-abc-a/db', { DATABASE_SSL: 'require' }), 'verify');
+    assert.equal(ssl('postgres://u:p@db.example.org/openleaf', { DATABASE_SSL: 'off' }), 'off');
+  });
+
+  it('decides in one place: the address is handed on without its own TLS parameters', () => {
+    assert.equal(
+      withoutTlsParams('postgresql://u:p%40ss@ep-x.aws.neon.tech/neondb?sslmode=require&channel_binding=require&application_name=openleaf'),
+      'postgresql://u:p%40ss@ep-x.aws.neon.tech/neondb?application_name=openleaf',
+    );
+    const plain = 'postgres://u:p@dpg-abc-a/db';
+    assert.equal(withoutTlsParams(plain), plain);
+    assert.equal(withoutTlsParams('not a url'), 'not a url');
   });
 });
 

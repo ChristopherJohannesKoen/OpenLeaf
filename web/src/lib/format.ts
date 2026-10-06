@@ -43,6 +43,15 @@ export function numberWord(n: number): string {
   return words[n] ?? String(n);
 }
 
+/** One sentence on how far a compile is kept from the service, from what the service reports. */
+export function keptApart(iso: { namespaces: boolean; noNetwork?: boolean; narrowFiles?: boolean } | undefined): string {
+  if (!iso) return '';
+  if (!(iso.noNetwork ?? iso.namespaces)) return 'A compile shares the service’s network.';
+  return iso.narrowFiles
+    ? 'A compile runs without network and sees only TeX and its own folder.'
+    : 'A compile runs without network.';
+}
+
 // What the browser may be asked to show in a tab of its own: formats that cannot carry script.
 // A file opened from here is a page on this app's own address, so anything that could run
 // (SVG, HTML, XML) is never opened, only handed over as a download.

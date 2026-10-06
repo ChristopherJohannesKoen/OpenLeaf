@@ -18,14 +18,16 @@ npm run dev
 
 Then open http://localhost:5173.
 
-- **With your hosted service (the default).** `npm run dev` forwards every `/api` call to
-  `https://openleaf-api.onrender.com`, so nothing else has to run on your computer. The first time,
-  the sign-in screen offers "Create the account"; the invite code is the `INVITE_CODE` of the web
-  service in Render. A sleeping free-plan service takes about a minute to answer the first request;
-  the sign-in screen keeps asking until it does.
-- **With an API on your computer.** Start the back end (see the README above), then
-  `OPENLEAF_API=http://localhost:3000 npm run dev` (PowerShell: `$env:OPENLEAF_API="http://localhost:3000"; npm run dev`).
-  Or put `OPENLEAF_API=http://localhost:3000` in `web/.env.local`.
+- **With an API on your computer (the default).** In the folder above, `docker compose up --build`
+  starts PostgreSQL and the API on `http://localhost:3000`; `npm run dev` forwards every `/api`
+  call there. It signs in with an email and password, and the first account made is the owner.
+  For an API somewhere else: `OPENLEAF_API=http://localhost:4000 npm run dev`
+  (PowerShell: `$env:OPENLEAF_API="http://localhost:4000"; npm run dev`), or put the line in
+  `web/.env.local`.
+- **Not with the hosted service.** The hosted instance signs people in with Google, and Google
+  sign-in is tied to the hosted site's own address (the Firebase project lists it, and the key is
+  limited to it). From `localhost` the sign-in screen says so. That is deliberate: a copy of the
+  page somewhere else cannot sign in to your service.
 - **With no service at all.** Press "Open the sample library" on the sign-in screen. Four small
   projects are held in the browser tab, so every screen can be clicked through. Sample mode cannot
   run LaTeX: "Compile" re-reads the source for missing pictures and undefined keys, and the proof

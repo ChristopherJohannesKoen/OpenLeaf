@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../app/context';
 import { Button, Confirm, Fig, Ledger, Rail, State, Switch, Wordmark, type LedgerRow } from '../ds';
-import { bytes, saveBlob } from '../lib/format';
+import { bytes, keptApart, saveBlob, when } from '../lib/format';
 import type { PaneKey, ThemeChoice } from '../lib/prefs';
 import { go } from '../lib/router';
 import { failure, Notice, type NoticeData } from '../parts/Notice';
@@ -62,7 +62,9 @@ export function Modules() {
     ...(api.kind === 'service'
       ? [{
           title: 'LaTeX',
-          note: engines.length ? `Engines on the service: ${engines.join(', ')}.` : 'No engine has answered yet.',
+          note: engines.length
+            ? [`Engines on the service: ${engines.join(', ')}.`, keptApart(info?.compile?.isolation)].filter(Boolean).join(' ')
+            : 'No engine has answered yet.',
           end: info?.compile ? <Fig>{info.compile.defaultEngine}</Fig> : null,
         }]
       : []),
@@ -70,7 +72,10 @@ export function Modules() {
       ? github.state.account
         ? {
             title: 'GitHub',
-            note: <>Linked as <Fig>{github.state.account.login}</Fig>. Each project is saved to a repository of its own, from its History pane.</>,
+            note: <>
+              Linked as <Fig>{github.state.account.login}</Fig>. Each project is saved to a repository of its own, from its History pane.
+              {github.state.account.lapsesAt ? <> The link renews itself as it is used; left unused, it lapses on <Fig>{when(github.state.account.lapsesAt)}</Fig>.</> : null}
+            </>,
             end: <Button onClick={() => setAsking('unlink')}>Unlink</Button>,
           }
         : {

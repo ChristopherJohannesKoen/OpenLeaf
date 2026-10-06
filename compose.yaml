@@ -1,0 +1,43 @@
+# A whole OpenLeaf back end on this machine, for development: PostgreSQL and the API
+# (with TeX Live inside, so nothing else has to be installed).
+#
+#   docker compose up --build              # the API on http://localhost:3000, docs at /docs
+#   cd web && npm install && npm run dev   # the front end on http://localhost:5173
+#
+# Sign-in here is by email and password: no Google account, no invite code. The first account
+# made becomes the owner and after that nobody else can register. Nothing is shared with a
+# hosted instance; `docker compose down -v` throws this one's data away.
+#
+# The first build downloads TeX Live (about 1.5 GB) and takes a while.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: openleaf
+      # Only reachable from the api container below; the port is not published.
+      POSTGRES_PASSWORD: openleaf
+      POSTGRES_DB: openleaf
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openleaf"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://openleaf:openleaf@db:5432/openleaf
+      PORT: "3000"
+      REGISTRATION: first-user
+    ports:
+      # This machine only.
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  db:

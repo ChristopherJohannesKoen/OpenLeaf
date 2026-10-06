@@ -141,6 +141,23 @@ export async function readIfFresh(file: string, since: number): Promise<Buffer |
   }
 }
 
+/**
+ * The lines that say why a run failed: TeX's own complaints from its log (or, failing that,
+ * from what the tools printed), not latexmk's closing advice.
+ */
+async function whatWentWrong(dir: string, jobName: string, output: string): Promise<string> {
+  const log = (await readIfFresh(path.join(dir, `${jobName}.log`), 0))?.toString('utf8') ?? '';
+  const telling = /^!|error|fatal|cannot|can't|could not|unable|denied|not found|not loadable|unrecognized|no such|failed/i;
+  const pick = (text: string) =>
+    text
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter((line) => line && telling.test(line) && !/^Latexmk:|rerun latexmk|force complete|error summary/.test(line));
+  const lines = [...new Set([...pick(log), ...pick(output)])].slice(0, 14);
+  const said = lines.length ? lines : output.trim().split('\n').slice(-8);
+  return said.join(' | ').slice(0, 1600);
+}
+
 export interface SelfTestResult {
   ok: boolean;
   engine: string;
@@ -616,27 +633,32 @@ export class CompileService {
       const release = await this.slots.acquire();
       let res;
       let pdf: Buffer | null;
+      let why = '';
       try {
         const attempt = async (iso: Isolation) => {
-          await rm(path.join(dir, 'selftest.pdf'), { force: true });
+          // From nothing each time: latexmk remembers a failed step and would not try it again.
+          for (const left of await readdir(dir)) {
+            if (left !== 'selftest.tex') await rm(path.join(dir, left), { recursive: true, force: true });
+          }
           const wrapped = this.wrap(cmd, args, dir, iso);
           const r = await run(wrapped.cmd, wrapped.args, { cwd: dir, env: await this.texEnv(), timeoutMs: this.config.compile.timeoutMs });
           const out = await readIfFresh(path.join(dir, 'selftest.pdf'), 0);
-          return { r, out, ok: r.exitCode === 0 && out !== null && out.byteLength > 0 };
+          const ok = r.exitCode === 0 && out !== null && out.byteLength > 0;
+          return { r, out, ok, why: ok ? '' : await whatWentWrong(dir, 'selftest', r.output) };
         };
         const steps = this.fallbacks();
         const first = await attempt(steps[0]!);
         let chosen = first;
+        // What was tried and did not compile, most isolation first.
+        const failed = first.ok ? [] : [{ inside: describeIsolation(steps[0]!, this.guarded), why: first.why }];
         for (let i = 1; !chosen.ok && i < steps.length; i++) {
           const next = await attempt(steps[i]!);
-          if (!next.ok) continue;
+          if (!next.ok) {
+            failed.push({ inside: describeIsolation(steps[i]!, this.guarded), why: next.why });
+            continue;
+          }
           this.log.error(
-            {
-              engine: engineId,
-              was: describeIsolation(this.isolation, this.guarded),
-              now: describeIsolation(steps[i]!, this.guarded),
-              output: first.r.output.slice(-400),
-            },
+            { engine: engineId, now: describeIsolation(steps[i]!, this.guarded), failed },
             'compiles fail inside the isolation on this host; continuing with less of it',
           );
           this.isolation = steps[i]!;
@@ -645,6 +667,7 @@ export class CompileService {
         }
         res = chosen.r;
         pdf = chosen.out;
+        why = chosen.why;
       } finally {
         release();
       }
@@ -652,10 +675,7 @@ export class CompileService {
       if (res.exitCode === 0 && pdf && pdf.byteLength > 0) {
         return result(true, 'Compiled a test document successfully.', pdf.byteLength);
       }
-      return result(
-        false,
-        res.spawnError ?? (res.timedOut ? 'Timed out.' : `Exit code ${res.exitCode}: ${res.output.slice(-600)}`),
-      );
+      return result(false, res.spawnError ?? (res.timedOut ? 'Timed out.' : `Exit code ${res.exitCode}: ${why}`));
     } catch (err) {
       return result(false, (err as Error).message);
     }

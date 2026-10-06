@@ -26,7 +26,7 @@ async function main() {
   });
   const log = {
     info: (o: object, msg: string) => console.log(`  ${msg}`, JSON.stringify(o)),
-    error: (o: object, msg: string) => console.log(`  !! ${msg}`, JSON.stringify(o)),
+    error: (o: object, msg: string) => console.log(`  !! ${msg}\n     ${JSON.stringify(o, null, 1).replace(/\n/g, '\n     ')}`),
   };
   const compiler = new CompileService(null as unknown as Db, config, new EventBus(), log);
   await compiler.prepareIsolation();

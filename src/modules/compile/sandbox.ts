@@ -85,6 +85,7 @@ const READ_ALWAYS = [
   '/etc/ghostscript',
   '/etc/perl',
   '/etc/papersize',
+  '/etc/paperspecs',
   '/etc/libpaper.d',
   '/etc/ld.so.cache',
   '/etc/ld.so.conf',

@@ -337,15 +337,25 @@ describe('choosing the isolation', { skip: !onLinux }, () => {
       const compiler = new CompileService(null as unknown as Db, config, new EventBus(), log);
       await compiler.prepareIsolation();
       assert.equal(compiler.isolation.files, true);
-      // A host whose file rules leave TeX out: nothing can start inside them.
-      compiler.isolation = { ...compiler.isolation, readPaths: ['/var/empty-and-missing'] };
+      const real = compiler.isolation;
 
+      // A host whose file rules leave TeX out altogether: nothing can start inside them.
+      compiler.isolation = { ...real, readPaths: ['/var/empty-and-missing'] };
       const [result] = await compiler.runSelfTest(['pdflatex']);
       assert.equal(result!.ok, true, result!.message);
       assert.equal(compiler.isolation.files, false, 'the file rules were dropped');
       assert.equal(compiler.isolation.syscalls, true, 'the rest was kept');
       assert.equal(noNetwork(compiler.isolation), true);
       assert.match(said.join('\n'), /continuing with less of it/);
+
+      // And one whose rules let latexmk start but hide something TeX needs (here: its formats).
+      if (existsSync('/var/lib/texmf/web2c')) {
+        compiler.isolation = { ...real, readPaths: real.readPaths.filter((p) => !p.startsWith('/var/lib/texmf')) };
+        const [again] = await compiler.runSelfTest(['pdflatex']);
+        assert.equal(again!.ok, true, again!.message);
+        assert.equal(compiler.isolation.files, false);
+        assert.equal(compiler.isolation.syscalls, true);
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

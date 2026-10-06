@@ -91,7 +91,7 @@ services:
         value: DENY
       - path: /*
         name: Referrer-Policy
-        value: no-referrer
+        value: strict-origin-when-cross-origin
       - path: /*
         name: Permissions-Policy
         value: camera=(), microphone=(), geolocation=()

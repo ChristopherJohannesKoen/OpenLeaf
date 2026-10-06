@@ -37,7 +37,9 @@ function contentSecurityPolicy(apiUrl: string | undefined): Plugin {
     apply: 'build',
     transformIndexHtml: () => [
       { tag: 'meta', attrs: { 'http-equiv': 'Content-Security-Policy', content: policy }, injectTo: 'head-prepend' },
-      { tag: 'meta', attrs: { name: 'referrer', content: 'no-referrer' }, injectTo: 'head-prepend' },
+      // Other sites are told the site's address and nothing of the page within it. (Not "no-referrer":
+      // Google checks the address when the Firebase key is limited to this site.)
+      { tag: 'meta', attrs: { name: 'referrer', content: 'strict-origin-when-cross-origin' }, injectTo: 'head-prepend' },
     ],
   };
 }

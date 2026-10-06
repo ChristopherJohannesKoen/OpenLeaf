@@ -2,9 +2,10 @@
 
 A modular, self-hosted LaTeX writing service — a personal, customisable
 Overleaf-style tool. The repository root is the **back end**: an HTTP API that
-stores projects, compiles them to PDF and keeps their history. The **front end**
-(the editor you open in a browser) is in [`web/`](web/README.md); any other
-front end (desktop, a script, a notebook) can be built on the same API.
+stores projects, compiles them to PDF, keeps their history and can save each one
+to a GitHub repository of its own. The **front end** (the editor you open in a
+browser) is in [`web/`](web/README.md); any other front end (desktop, a script,
+a notebook) can be built on the same API.
 
 - **Runtime:** Node.js 22 + TypeScript + Fastify
 - **Storage:** PostgreSQL (projects, files, PDFs, history — everything)
@@ -25,7 +26,8 @@ Interactive API documentation is served by every instance at **`/docs`**
 | `history` | Named versions, automatic versions after successful compiles, per-file diffs, restore (with automatic backup), zip of any version. |
 | `templates` | Built-in starters (article, thesis/report, beamer, notes, assignment) and saving your own projects as templates. |
 | `settings` | Per-user preferences as free-form JSON merged over defaults (editor, compile, layout, snippets). |
-| `share` | Read-only links to a project's latest PDF for people without an account. |
+| `share` | Read-only links to a project's latest PDF for people without an account. They expire (30 days unless asked otherwise). |
+| `github` | Link a GitHub account with a one-time code, give each project a repository of its own, and save the project to it as commits. |
 | `system` *(core)* | `/healthz`, `/api/system/info`. |
 
 ## Design
@@ -38,7 +40,7 @@ src/
   core/                database, migrations, module system, event bus, path safety
   modules/
     index.ts           the list of modules  <- add yours here
-    auth/ projects/ files/ compile/ history/ templates/ settings/ share/ system/
+    auth/ projects/ files/ compile/ history/ templates/ settings/ share/ github/ system/
 test/                  unit + end-to-end tests (real Postgres, real LaTeX)
 ```
 
@@ -58,11 +60,15 @@ Design choices worth knowing:
   stored in the database too, so nothing is lost when the server restarts or
   its disk is wiped (which happens on every deploy on most hosts). The compile
   folder on disk is only a cache that makes repeat compiles fast.
-- **Compiles are sandboxed by configuration.** LaTeX runs as a non-root user
+- **Compiles are kept apart from the service.** LaTeX runs as a non-root user
   with a minimal environment (it never sees `DATABASE_URL`), cannot read or
   write outside the project folder (`openin_any=p`), may only run TeX Live's
-  short list of safe helper programs, ignores `latexmkrc`, and is killed
-  (whole process tree) after a time limit.
+  short list of safe helper programs, ignores `latexmkrc`, has memory and
+  file-size ceilings, and is killed (whole process tree) after a time limit.
+  Where the host allows unprivileged namespaces, each compile also gets its own
+  process, network and mount view: it cannot see the service's process and has
+  no network at all. `GET /api/system/info` reports what is in force. See
+  [`SECURITY.md`](SECURITY.md).
 - **Saving is conflict-safe.** Every file has a version number; send the one
   you loaded as `baseVersion` and a stale save is rejected with `409` instead
   of silently overwriting newer work.
@@ -203,6 +209,9 @@ The ones you are most likely to touch:
 | `DATABASE_URL` | — | Postgres connection string (required) |
 | `REGISTRATION` | `first-user`, or `invite` if `INVITE_CODE` is set | Who may create accounts: `first-user`, `invite`, `open`, `closed` |
 | `INVITE_CODE` | — | Secret needed to register in `invite` mode |
+| `SESSION_TTL_DAYS` / `SESSION_MAX_DAYS` | `30` / `90` | A session ends this long after its last use / after it was made |
+| `TRUST_PROXY` | private-network proxies | Whose word to take for the caller's address: address ranges, a number of proxy hops, `true` or `false` |
+| `GITHUB_CLIENT_ID` + `SECRETS_KEY` | — | Switch on saving to GitHub (see below) |
 | `AUTH_PROVIDER` | `local` | `local`: OpenLeaf keeps a hashed password per account. `firebase`: people sign in with Google through Firebase Authentication and OpenLeaf keeps no password (see below) |
 | `FIREBASE_PROJECT_ID` / `FIREBASE_API_KEY` | — | The Firebase project and its web API key (required with `AUTH_PROVIDER=firebase`; neither is a secret) |
 | `CORS_ORIGINS` | `*` | Browser origins allowed to call the API |
@@ -210,6 +219,8 @@ The ones you are most likely to touch:
 | `DEFAULT_ENGINE` | `pdflatex` | Engine for new projects |
 | `COMPILE_TIMEOUT_MS` | `180000` | Hard limit per compile |
 | `COMPILE_SHELL_ESCAPE` | `restricted` | `off`, `restricted` or `full` (needed by `minted`; trusted users only) |
+| `COMPILE_ENGINES` | all installed | Which engines people may use, e.g. `pdflatex,xelatex` |
+| `COMPILE_ISOLATION` | `auto` | `auto`: isolate compiles when the host allows; `required`: refuse to compile otherwise; `off` |
 | `ALLOW_LATEXMKRC` | `false` | Honour a project's `latexmkrc` (it can run arbitrary code) |
 | `MAX_UPLOAD_BYTES` / `MAX_PROJECT_BYTES` | 25 MB / 150 MB | Size limits |
 
@@ -237,6 +248,34 @@ the front end's address under **Authentication → Settings → Authorised
 domains**, and register a web app to get the project id and API key. Then set
 `AUTH_PROVIDER`, `FIREBASE_PROJECT_ID` and `FIREBASE_API_KEY` on the API. The
 front end needs no setting of its own: it asks the API how to sign in.
+
+### Saving projects to GitHub
+
+Each project can be kept in a GitHub repository of its own. In the app: link
+the account once under **Modules → Connections → GitHub** (GitHub shows a
+one-time code to approve; no GitHub password passes through OpenLeaf), then in
+a project's **History** pane choose a repository name and **Create
+repository**, and after that **Save to GitHub** whenever you like. Each save is
+one commit holding exactly the project's files; only contents that changed are
+uploaded. Repositories are private unless you say otherwise. If the repository
+was changed on GitHub in the meantime, OpenLeaf asks before saving on top (the
+other changes stay in the history).
+
+To switch it on for an instance:
+
+1. On GitHub: **Settings → Developer settings → OAuth Apps → New OAuth App**.
+   Any name; homepage and callback URL can both be your front end's address
+   (the callback is not used). After creating it, tick **Enable Device Flow**.
+   No client secret is needed.
+2. Set `GITHUB_CLIENT_ID` to the app's client id and `SECRETS_KEY` to 32 random
+   bytes (`openssl rand -base64 32`). The key encrypts the stored GitHub
+   tokens; if it is lost or changed, people simply link again.
+3. Optional: `GITHUB_SCOPE=public_repo` limits OpenLeaf to public
+   repositories (the default, `repo`, reaches private ones too).
+
+Routes: `GET|DELETE /api/github`, `POST /api/github/link`,
+`POST /api/github/link/:linkId`, and per project `GET|POST|DELETE
+/api/projects/:id/github` and `POST /api/projects/:id/github/save`.
 
 ## Customising
 
@@ -280,9 +319,14 @@ automatically at the next start, tracked per module.
 
 ## Not included (yet)
 
-Real-time collaborative editing, Git sync and spell-checking are not part of
-this back end. The file API's version checks are the hook for adding
-collaborative editing later.
+Real-time collaborative editing, pulling changes back from GitHub, and
+spell-checking are not part of this back end. The file API's version checks are
+the hook for adding collaborative editing later.
+
+## Security
+
+How sign-in, access, compiling and stored tokens are protected, and how to
+report a problem: [`SECURITY.md`](SECURITY.md).
 
 ## Licence
 

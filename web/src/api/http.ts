@@ -2,7 +2,8 @@
 import {
   ApiError,
   type Api, type Change, type Compile, type CompileOptions, type FileDiff, type FileMeta, type PdfPosition, type Project,
-  type Registration, type Session, type Settings, type SourcePosition, type SystemInfo, type Template, type TextFile,
+  type GithubKeep, type GithubLinkAnswer, type GithubLinkStart, type GithubState,
+  type Registration, type Session, type SessionInfo, type Settings, type SourcePosition, type SystemInfo, type Template, type TextFile,
   type User, type Version,
 } from './types';
 
@@ -89,6 +90,8 @@ export class HttpApi implements Api {
     return this.json<Session>('POST', '/api/auth/firebase', { json: { idToken, inviteCode } });
   }
   async logout() { await this.json<void>('POST', '/api/auth/logout'); }
+  async logoutAll() { await this.json<void>('POST', '/api/auth/logout-all'); }
+  async sessions() { return (await this.json<{ sessions: SessionInfo[] }>('GET', '/api/auth/sessions')).sessions; }
   async me() { return (await this.json<{ user: User }>('GET', '/api/auth/me')).user; }
 
   // system
@@ -188,4 +191,14 @@ export class HttpApi implements Api {
   async patchSettings(patch: Record<string, unknown>) {
     return (await this.json<{ settings: Settings }>('PATCH', '/api/settings', { json: patch })).settings;
   }
+
+  // GitHub
+  github() { return this.json<GithubState>('GET', '/api/github'); }
+  githubLinkStart() { return this.json<GithubLinkStart>('POST', '/api/github/link'); }
+  githubLinkPoll(linkId: string) { return this.json<GithubLinkAnswer>('POST', `/api/github/link/${encodeURIComponent(linkId)}`); }
+  async githubUnlink() { await this.json<void>('DELETE', '/api/github'); }
+  githubKeep(id: string) { return this.json<GithubKeep>('GET', `/api/projects/${id}/github`); }
+  githubCreate(id: string, input: { name?: string; private?: boolean }) { return this.json<GithubKeep>('POST', `/api/projects/${id}/github`, { json: input }); }
+  githubSave(id: string, input: { message?: string; overwrite?: boolean } = {}) { return this.json<GithubKeep>('POST', `/api/projects/${id}/github/save`, { json: input }); }
+  async githubForget(id: string) { await this.json<void>('DELETE', `/api/projects/${id}/github`); }
 }

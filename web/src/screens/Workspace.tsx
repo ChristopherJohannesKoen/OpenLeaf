@@ -8,7 +8,7 @@ import {
   type Entry, type Heading, type RailModule,
 } from '../ds';
 import { SourceEditor, type Caret, type SourceEditorHandle } from '../editor/SourceEditor';
-import { clock, saveBlob, seconds, slug } from '../lib/format';
+import { clock, saveBlob, seconds, shownAs, slug } from '../lib/format';
 import {
   compileNotes, describe, headingAt, indexProject, outline, readingNotes, resolvedNote, toneOf, wordCount,
   type MarginNote, type OutlineHeading,
@@ -358,10 +358,13 @@ export function WorkspaceScreen({ id }: { id: string }) {
 
   const openMeta = useCallback((file: FileMeta) => {
     if (file.kind === 'text') { void openFile(file.path); return; }
-    // Anything that is not text is shown by the browser, in its own tab.
+    // A picture or a PDF is shown by the browser in its own tab, as the type its name says and
+    // never as whatever the bytes claim to be. Anything else is handed over as a download.
     void api.readRaw(id, file.path)
       .then((blob) => {
-        const url = URL.createObjectURL(blob);
+        const type = shownAs(file.path);
+        if (!type) { saveBlob(blob, file.path.slice(file.path.lastIndexOf('/') + 1)); return; }
+        const url = URL.createObjectURL(new Blob([blob], { type }));
         window.open(url, '_blank', 'noopener');
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       })
@@ -643,7 +646,7 @@ export function WorkspaceScreen({ id }: { id: string }) {
       )}
       {show.history && canHistory && (
         <HistoryPane
-          api={api} projectId={id} tick={filesTick + savedTick}
+          api={api} projectId={id} projectName={project.name} tick={filesTick + savedTick}
           beforeAction={saveAll}
           onDiff={(version, path) => {
             const key = `${path} @ ${clock(version.createdAt)}`;

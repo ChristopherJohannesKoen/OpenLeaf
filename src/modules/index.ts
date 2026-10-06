@@ -2,6 +2,7 @@ import type { OpenLeafModule } from '../core/modules.js';
 import { authModule } from './auth/index.js';
 import { compileModule } from './compile/index.js';
 import { filesModule } from './files/index.js';
+import { githubModule } from './github/index.js';
 import { historyModule } from './history/index.js';
 import { projectsModule } from './projects/index.js';
 import { settingsModule } from './settings/index.js';
@@ -25,4 +26,5 @@ export const ALL_MODULES: OpenLeafModule[] = [
   templatesModule,
   settingsModule,
   shareModule,
+  githubModule,
 ];

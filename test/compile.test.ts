@@ -226,7 +226,7 @@ Unicode text: café, naïve, Stellenbosch — ünïcödé.
     try {
       let info: any;
       for (let i = 0; i < 600; i++) {
-        info = (await withSelfTest.api.get('/api/system/info')).body;
+        info = (await withSelfTest.api.get('/api/system/info', token)).body; // same database, so the same session
         if (info.compile.selfTests.length === 3) break;
         await new Promise((r) => setTimeout(r, 100));
       }
@@ -249,6 +249,39 @@ Unicode text: café, naïve, Stellenbosch — ünïcödé.
     await t.api.patch(`/api/projects/${id}`, { mainFile: 'paper/my thesis.tex' }, token);
     const res = await t.api.post(`/api/projects/${id}/compile`, {}, token);
     assert.equal(res.body.compile.status, 'success', JSON.stringify(res.body.compile.diagnostics));
+  });
+});
+
+describe('engine allow-list and isolation', () => {
+  it('offers only the engines the instance allows', async () => {
+    const t = await createTestApp({ COMPILE_ENGINES: 'pdflatex' });
+    try {
+      const token = (await signUp(t, 'erin')).token;
+      const projectId = await newProject(t, token, 'One engine');
+      const engines = await t.api.get('/api/compile/engines', token);
+      assert.deepEqual(engines.body.engines.map((e: any) => e.id), ['pdflatex']);
+      const refused = await t.api.post(`/api/projects/${projectId}/compile`, { engine: 'lualatex' }, token);
+      assert.equal(refused.status, 400);
+      assert.equal(refused.body.error.code, 'engine_disabled');
+      const ok = await t.api.post(`/api/projects/${projectId}/compile`, {}, token);
+      assert.equal(ok.body.compile.status, 'success');
+    } finally {
+      await t.destroy();
+    }
+  });
+
+  it('says how compiles are kept apart, and still compiles with isolation switched off', async () => {
+    const t = await createTestApp({ COMPILE_ISOLATION: 'off' });
+    try {
+      const token = (await signUp(t, 'omar')).token;
+      const info = await t.api.get('/api/system/info', token);
+      assert.equal(info.body.compile.isolation.namespaces, false);
+      const projectId = await newProject(t, token, 'Plain');
+      const res = await t.api.post(`/api/projects/${projectId}/compile`, {}, token);
+      assert.equal(res.body.compile.status, 'success');
+    } finally {
+      await t.destroy();
+    }
   });
 });
 

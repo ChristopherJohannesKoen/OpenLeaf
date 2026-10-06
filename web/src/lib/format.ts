@@ -43,6 +43,20 @@ export function numberWord(n: number): string {
   return words[n] ?? String(n);
 }
 
+// What the browser may be asked to show in a tab of its own: formats that cannot carry script.
+// A file opened from here is a page on this app's own address, so anything that could run
+// (SVG, HTML, XML) is never opened, only handed over as a download.
+const SHOWN: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+  pdf: 'application/pdf',
+};
+
+/** The type to show a file as, or null if it must be downloaded instead. Goes by the name only. */
+export function shownAs(path: string): string | null {
+  const dot = path.lastIndexOf('.');
+  return dot < 0 ? null : SHOWN[path.slice(dot + 1).toLowerCase()] ?? null;
+}
+
 /** Hands a blob to the browser as a download. */
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);

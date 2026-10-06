@@ -40,8 +40,46 @@ export interface SystemInfo {
   modules: { name: string; description: string; core: boolean }[];
   registration: { mode: string; hasOwner: boolean };
   limits: { maxUploadBytes: number; maxProjectBytes: number; maxTextFileBytes: number };
-  compile?: { defaultEngine: string; timeoutSeconds: number; engines: EngineStatus[] };
+  compile?: {
+    defaultEngine: string; timeoutSeconds: number; engines: EngineStatus[];
+    /** How compiles are kept apart from the service on this host. */
+    isolation?: { namespaces: boolean; limits: boolean; noNewPrivileges: boolean; summary: string };
+  };
   templates?: { builtin: string[] };
+  github?: { available: boolean; scope: string | null };
+}
+
+/** A place this account is signed in. */
+export interface SessionInfo {
+  id: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  current: boolean;
+}
+
+export interface GithubAccount { login: string; name: string; scopes: string[]; linkedAt: string }
+
+/** Whether the service can save to GitHub, and the account linked to this OpenLeaf account. */
+export interface GithubState { available: boolean; scope: string | null; account: GithubAccount | null }
+
+/** A link being made: the code to type in at GitHub, and where. */
+export interface GithubLinkStart { linkId: string; userCode: string; verificationUri: string; expiresAt: string; intervalSeconds: number }
+
+export type GithubLinkAnswer =
+  | { status: 'pending'; intervalSeconds?: number }
+  | { status: 'linked'; account: GithubAccount }
+  | { status: 'expired' | 'denied' };
+
+/** The repository a project is kept in. */
+export interface GithubKeep {
+  repo: { fullName: string; url: string; private: boolean; branch: string } | null;
+  lastSavedAt: string | null;
+  lastCommit: { sha: string; url: string } | null;
+  /** The project has changed since it was last saved there. */
+  changed: boolean;
+  /** On a save: whether a commit was made (false when there was nothing new). */
+  saved?: boolean;
 }
 
 export interface Project {
@@ -202,6 +240,9 @@ export interface Api {
   /** Trade a Firebase ID token for a session. A new account on an invite-only service needs `inviteCode`. */
   firebaseSignIn(idToken: string, inviteCode?: string): Promise<Session>;
   logout(): Promise<void>;
+  /** End every session of this account, on every browser. */
+  logoutAll(): Promise<void>;
+  sessions(): Promise<SessionInfo[]>;
   me(): Promise<User>;
 
   // system
@@ -251,4 +292,14 @@ export interface Api {
   // preferences
   getSettings(): Promise<Settings>;
   patchSettings(patch: Record<string, unknown>): Promise<Settings>;
+
+  // GitHub: an account linked by a one-time code, and one repository per project
+  github(): Promise<GithubState>;
+  githubLinkStart(): Promise<GithubLinkStart>;
+  githubLinkPoll(linkId: string): Promise<GithubLinkAnswer>;
+  githubUnlink(): Promise<void>;
+  githubKeep(id: string): Promise<GithubKeep>;
+  githubCreate(id: string, input: { name?: string; private?: boolean }): Promise<GithubKeep>;
+  githubSave(id: string, input?: { message?: string; overwrite?: boolean }): Promise<GithubKeep>;
+  githubForget(id: string): Promise<void>;
 }

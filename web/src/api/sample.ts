@@ -7,7 +7,8 @@ import { BLANK_DOCUMENT, SAMPLE_PROJECTS, SAMPLE_TEMPLATES, type SampleProject }
 import {
   ApiError,
   type Api, type Change, type Compile, type CompileOptions, type Diagnostic, type FileDiff, type FileKind, type FileMeta,
-  type PdfPosition, type Project, type Registration, type Session, type Settings, type SourcePosition, type SystemInfo,
+  type GithubKeep, type GithubLinkAnswer, type GithubLinkStart, type GithubState,
+  type PdfPosition, type Project, type Registration, type Session, type SessionInfo, type Settings, type SourcePosition, type SystemInfo,
   type Template, type TextFile, type User, type Version,
 } from './types';
 
@@ -134,6 +135,8 @@ export class SampleApi implements Api {
   async login(): Promise<Session> { return { user: USER, token: 'sample', expiresAt: null }; }
   async firebaseSignIn(): Promise<Session> { return { user: USER, token: 'sample', expiresAt: null }; }
   async logout(): Promise<void> {}
+  async logoutAll(): Promise<void> {}
+  async sessions(): Promise<SessionInfo[]> { return []; }
   async me(): Promise<User> { return USER; }
 
   async info(): Promise<SystemInfo> {
@@ -401,6 +404,16 @@ export class SampleApi implements Api {
   }
 
   // preferences
+  // The sample library is not joined to anything.
+  async github(): Promise<GithubState> { return { available: false, scope: null, account: null }; }
+  async githubLinkStart(): Promise<GithubLinkStart> { throw new ApiError(503, 'github_not_configured', 'The sample library cannot be linked to GitHub.'); }
+  async githubLinkPoll(): Promise<GithubLinkAnswer> { return { status: 'expired' }; }
+  async githubUnlink(): Promise<void> {}
+  async githubKeep(): Promise<GithubKeep> { return { repo: null, lastSavedAt: null, lastCommit: null, changed: false }; }
+  async githubCreate(): Promise<GithubKeep> { throw new ApiError(503, 'github_not_configured', 'The sample library cannot be saved to GitHub.'); }
+  async githubSave(): Promise<GithubKeep> { throw new ApiError(503, 'github_not_configured', 'The sample library cannot be saved to GitHub.'); }
+  async githubForget(): Promise<void> {}
+
   async getSettings(): Promise<Settings> { return this.settings; }
   async patchSettings(patch: Record<string, unknown>): Promise<Settings> {
     this.settings = mergePatch(this.settings, patch) as Settings;

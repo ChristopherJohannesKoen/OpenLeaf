@@ -28,10 +28,34 @@ export interface BuildOptions {
   modules?: OpenLeafModule[];
 }
 
+/** Keep secrets that travel in an address out of the logs. */
+export function redactUrl(url: string): string {
+  return url.replace(/^(\/api\/shared\/)[^/?#]+/, '$1[redacted]');
+}
+
 export async function buildApp(config: Config, options: BuildOptions = {}): Promise<OpenLeafApp> {
   const app = Fastify({
-    logger: options.logger ?? { level: config.logLevel },
-    trustProxy: true, // Render terminates TLS in front of us
+    logger: options.logger ?? {
+      level: config.logLevel,
+      serializers: {
+        // The default, with one change: a share link's token is its password, so it is not logged.
+        req(req: { method: string; url: string; host?: string; ip?: string; socket?: { remotePort?: number } }) {
+          return {
+            method: req.method,
+            url: redactUrl(req.url),
+            host: req.host,
+            remoteAddress: req.ip,
+            remotePort: req.socket?.remotePort,
+          };
+        },
+      },
+    },
+    // Whose word to take for the caller's address (rate limits and logs use it). See TRUST_PROXY.
+    trustProxy:
+      typeof config.trustProxy === 'number'
+        ? // "n hops": believe the n nearest proxies, counted from the connection inwards.
+          (_address: string, hop: number) => hop < (config.trustProxy as number)
+        : config.trustProxy,
     bodyLimit: Math.max(4 * 1024 * 1024, config.maxTextFileBytes * 2),
     routerOptions: { ignoreTrailingSlash: true },
   });

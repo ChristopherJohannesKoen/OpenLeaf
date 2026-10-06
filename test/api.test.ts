@@ -3,7 +3,8 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from 'jose';
-import { unzipSync, zipSync } from 'fflate';
+import { strToU8, unzipSync, zipSync } from 'fflate';
+import { redactUrl } from '../src/app.js';
 import { createTestApp, newProject, signUp, TINY_PNG, type TestApp } from './helpers.js';
 
 describe('accounts', () => {
@@ -590,17 +591,154 @@ describe('settings and templates', () => {
   });
 });
 
+describe('hardening', () => {
+  let t: TestApp;
+  before(async () => {
+    t = await createTestApp({ SESSION_MAX_DAYS: '10', MAX_PROJECT_BYTES: String(2 * 1024 * 1024) });
+  });
+  after(() => t.destroy());
+
+  const login = (email: string) => t.api.post('/api/auth/login', { email, password: 'correct horse battery' });
+
+  it('lists sessions and signs out everywhere', async () => {
+    const owner = await signUp(t, 'owner');
+    const second = (await login(owner.email)).body.token as string;
+    const apiToken = (await t.api.post('/api/auth/tokens', { name: 'script' }, owner.token)).body.token as string;
+
+    const sessions = await t.api.get('/api/auth/sessions', second);
+    assert.equal(sessions.body.sessions.length, 2);
+    assert.equal(sessions.body.sessions.filter((s: any) => s.current).length, 1);
+    assert.equal(sessions.body.sessions[0].token, undefined);
+
+    assert.equal((await t.api.post('/api/auth/logout-all', undefined, second)).status, 204);
+    assert.equal((await t.api.get('/api/auth/me', second)).status, 401);
+    assert.equal((await t.api.get('/api/auth/me', owner.token)).status, 401);
+    // API tokens are for scripts and are kept unless asked for too.
+    assert.equal((await t.api.get('/api/auth/me', apiToken)).status, 200);
+    assert.equal((await t.api.post('/api/auth/logout-all?apiTokens=true', undefined, apiToken)).status, 204);
+    assert.equal((await t.api.get('/api/auth/me', apiToken)).status, 401);
+  });
+
+  it('ends a session after its absolute lifetime, however recently it was used', async () => {
+    const user = await signUp(t, 'aged');
+    assert.equal((await t.api.get('/api/auth/me', user.token)).status, 200);
+    await t.db.query(
+      `UPDATE auth_tokens SET created_at = now() - interval '11 days', last_used_at = now() WHERE user_id = $1`,
+      [user.id],
+    );
+    const res = await t.api.get('/api/auth/me', user.token);
+    assert.equal(res.status, 401);
+    assert.equal(res.body.error.code, 'session_expired');
+  });
+
+  it('never lets use push a session past its absolute lifetime, and clears out dead ones', async () => {
+    const user = await signUp(t, 'slider');
+    await t.db.query(
+      `UPDATE auth_tokens SET created_at = now() - interval '9 days', last_used_at = NULL WHERE user_id = $1`,
+      [user.id],
+    );
+    assert.equal((await t.api.get('/api/auth/me', user.token)).status, 200);
+    const row = await t.db.query<{ days: number }>(
+      `SELECT extract(epoch FROM (expires_at - now())) / 86400 AS days FROM auth_tokens WHERE user_id = $1`,
+      [user.id],
+    );
+    assert.ok(Number(row.rows[0]!.days) <= 1.01, `expected at most a day left, got ${row.rows[0]!.days}`);
+
+    await t.db.query(`UPDATE auth_tokens SET expires_at = now() - interval '1 hour' WHERE user_id = $1`, [user.id]);
+    await login(user.email);
+    const left = await t.db.query('SELECT 1 FROM auth_tokens WHERE user_id = $1', [user.id]);
+    assert.equal(left.rowCount, 1);
+  });
+
+  it('gives share links an expiry unless told otherwise, and keeps their tokens out of the log', async () => {
+    const user = await signUp(t, 'sharer');
+    const projectId = await newProject(t, user.token);
+    const link = await t.api.post(`/api/projects/${projectId}/share-links`, {}, user.token);
+    assert.equal(link.status, 201);
+    const days = (new Date(link.body.link.expiresAt).getTime() - Date.now()) / 86_400_000;
+    assert.ok(days > 29 && days < 31, `expected about 30 days, got ${days}`);
+    const long = await t.api.post(`/api/projects/${projectId}/share-links`, { expiresInDays: 400 }, user.token);
+    assert.ok(new Date(long.body.link.expiresAt).getTime() - Date.now() > 399 * 86_400_000);
+
+    assert.equal(redactUrl(`/api/shared/${link.body.token}/output.pdf?download=true`), '/api/shared/[redacted]/output.pdf?download=true');
+    assert.equal(redactUrl('/api/projects/123/files?path=a.tex'), '/api/projects/123/files?path=a.tex');
+  });
+
+  it('counts what an archive really unpacks to, not what it claims', async () => {
+    const user = await signUp(t, 'zipper');
+    // 6 MB of zeros squeezes into a few kilobytes; every size the archive declares is then set to 10 bytes.
+    const archive = Buffer.from(zipSync({ 'main.tex': strToU8('ok'), 'data.txt': [new Uint8Array(6 * 1024 * 1024), { level: 9 }] }));
+    for (const [magic, offset] of [['PK\x03\x04', 22], ['PK\x01\x02', 24]] as const) {
+      for (let at = archive.indexOf(magic, 0, 'latin1'); at >= 0; at = archive.indexOf(magic, at + 4, 'latin1')) {
+        archive.writeUInt32LE(10, at + offset);
+      }
+    }
+    assert.ok(archive.byteLength < 20_000);
+    const res = await t.api.upload('/api/projects/import', { files: [{ name: 'small.zip', data: archive }] }, user.token);
+    assert.equal(res.status, 413);
+    assert.equal(res.body.error.code, 'project_too_large');
+    assert.equal((await t.api.get('/api/projects', user.token)).body.projects.length, 0);
+  });
+
+  it('takes the caller\'s address only from proxies it has reason to believe', async () => {
+    const owner = (await login((await t.db.query<{ email: string }>(`SELECT email FROM users WHERE role = 'owner'`)).rows[0]!.email)).body.token as string;
+    const seen = async (remoteAddress: string, forwardedFor?: string) => {
+      const res = await t.app.inject({
+        method: 'GET',
+        url: '/api/system/request',
+        remoteAddress,
+        headers: { authorization: `Bearer ${owner}`, ...(forwardedFor ? { 'x-forwarded-for': forwardedFor } : {}) },
+      });
+      return res.json().address as string;
+    };
+    // Someone connecting directly cannot say they are someone else.
+    assert.equal(await seen('203.0.113.9', '1.2.3.4'), '203.0.113.9');
+    // Behind a proxy on a private network, the caller is the first public address from the proxy outwards,
+    // whatever was written to the left of it.
+    assert.equal(await seen('10.0.0.5', '198.51.100.7'), '198.51.100.7');
+    assert.equal(await seen('10.0.0.5', '1.2.3.4, 198.51.100.7'), '198.51.100.7');
+
+    const member = await signUp(t, 'member');
+    assert.equal((await t.api.get('/api/system/request', member.token)).status, 403);
+  });
+
+  it('believes a set number of proxy hops when told to', async () => {
+    const hops = await createTestApp({ TRUST_PROXY: '2' }, false);
+    try {
+      const owner = (await hops.api.post('/api/auth/login', {
+        email: (await hops.db.query<{ email: string }>(`SELECT email FROM users WHERE role = 'owner'`)).rows[0]!.email,
+        password: 'correct horse battery',
+      })).body.token as string;
+      const res = await hops.app.inject({
+        method: 'GET',
+        url: '/api/system/request',
+        remoteAddress: '10.0.0.5',
+        headers: { authorization: `Bearer ${owner}`, 'x-forwarded-for': '1.2.3.4, 198.51.100.7, 172.70.1.1' },
+      });
+      assert.equal(res.json().address, '198.51.100.7');
+    } finally {
+      await hops.destroy();
+    }
+  });
+});
+
 describe('instance', () => {
   it('serves health, info and API documentation', async () => {
     const t = await createTestApp();
     try {
+      // The health check is public and says only whether the service is up.
       const health = await t.api.get('/healthz');
       assert.equal(health.status, 200);
-      assert.equal(health.body.status, 'ok');
+      assert.deepEqual(health.body, { status: 'ok' });
 
-      const info = await t.api.get('/api/system/info');
+      // What the instance runs is for people who are signed in.
+      assert.equal((await t.api.get('/api/system/info')).status, 401);
+      const token = (await signUp(t, 'ivy')).token;
+      const info = await t.api.get('/api/system/info', token);
       assert.ok(info.body.modules.some((m: any) => m.name === 'compile'));
       assert.ok(info.body.compile.engines.some((e: any) => e.id === 'pdflatex' && e.available));
+      assert.equal(typeof info.body.compile.isolation.namespaces, 'boolean');
+      assert.equal(typeof info.body.compile.isolation.summary, 'string');
 
       const openapi = await t.api.get('/docs/json');
       assert.equal(openapi.status, 200);
@@ -625,10 +763,10 @@ describe('instance', () => {
       const token = (await signUp(t, 'frank')).token;
       assert.equal((await t.api.get('/api/templates', token)).status, 404);
       assert.equal((await t.api.get('/api/projects', token)).status, 200);
-      const info = await t.api.get('/api/system/info');
+      const info = await t.api.get('/api/system/info', token);
       assert.deepEqual(
         info.body.modules.map((m: any) => m.name),
-        ['auth', 'system', 'projects', 'files', 'compile', 'settings'],
+        ['auth', 'system', 'projects', 'files', 'compile', 'settings', 'github'],
       );
     } finally {
       await t.destroy();

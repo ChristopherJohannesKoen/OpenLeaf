@@ -51,13 +51,19 @@ function bearerToken(req: FastifyRequest): string | null {
   return m ? m[1]! : null;
 }
 
-async function issueSession(q: Queryable, userId: string, ttlDays: number) {
+/**
+ * A session lasts `ttlDays` from its last use, and never longer than `maxDays` from when it
+ * was made (0 = no such limit), so a token that leaks does not stay good for ever.
+ */
+async function issueSession(q: Queryable, userId: string, ttlDays: number, maxDays: number) {
   const token = newToken('olf');
+  // Tidy as we go: tokens past their date are of no use to anyone.
+  await q.query('DELETE FROM auth_tokens WHERE user_id = $1 AND expires_at < now()', [userId]);
   const res = await q.query<{ id: string; expires_at: Date }>(
     `INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at)
      VALUES ($1, 'session', $2, now() + make_interval(days => $3))
      RETURNING id, expires_at`,
-    [userId, hashToken(token), ttlDays],
+    [userId, hashToken(token), maxDays > 0 ? Math.min(ttlDays, maxDays) : ttlDays],
   );
   return { token, expiresAt: res.rows[0]!.expires_at };
 }
@@ -118,12 +124,13 @@ export const authModule: OpenLeafModule = {
         kind: 'session' | 'api';
         expires_at: Date | null;
         last_used_at: Date | null;
+        token_created_at: Date;
         id: string;
         email: string;
         display_name: string;
         role: 'owner' | 'member';
       }>(
-        `SELECT t.id AS token_id, t.kind, t.expires_at, t.last_used_at,
+        `SELECT t.id AS token_id, t.kind, t.expires_at, t.last_used_at, t.created_at AS token_created_at,
                 u.id, u.email, u.display_name, u.role
            FROM auth_tokens t JOIN users u ON u.id = t.user_id
           WHERE t.token_hash = $1`,
@@ -131,7 +138,12 @@ export const authModule: OpenLeafModule = {
       );
       const row = res.rows[0];
       if (!row) throw unauthorized('That token is not valid.', 'invalid_token');
-      if (row.expires_at && row.expires_at.getTime() < Date.now()) {
+      const DAY = 24 * 60 * 60 * 1000;
+      const tooOld =
+        row.kind === 'session' &&
+        config.sessionMaxDays > 0 &&
+        Date.now() - row.token_created_at.getTime() > config.sessionMaxDays * DAY;
+      if (tooOld || (row.expires_at && row.expires_at.getTime() < Date.now())) {
         await db.query('DELETE FROM auth_tokens WHERE id = $1', [row.token_id]);
         throw unauthorized('Your session has expired. Sign in again.', 'session_expired');
       }
@@ -141,11 +153,12 @@ export const authModule: OpenLeafModule = {
         await db.query(
           `UPDATE auth_tokens
               SET last_used_at = now(),
-                  expires_at = CASE WHEN kind = 'session'
-                                    THEN now() + make_interval(days => $2)
-                                    ELSE expires_at END
+                  expires_at = CASE WHEN kind <> 'session' THEN expires_at
+                                    WHEN $3::int > 0
+                                    THEN LEAST(now() + make_interval(days => $2), created_at + make_interval(days => $3::int))
+                                    ELSE now() + make_interval(days => $2) END
             WHERE id = $1`,
-          [row.token_id, config.sessionTtlDays],
+          [row.token_id, config.sessionTtlDays, config.sessionMaxDays],
         );
       }
       const user: AuthUser = {
@@ -278,7 +291,7 @@ export const authModule: OpenLeafModule = {
             [email, passwordHash, (req.body.displayName ?? '').trim(), hasUsers ? 'member' : 'owner'],
           );
           const user = inserted.rows[0]!;
-          const session = await issueSession(q, user.id, config.sessionTtlDays);
+          const session = await issueSession(q, user.id, config.sessionTtlDays, config.sessionMaxDays);
           return { user, session };
         });
 
@@ -312,7 +325,7 @@ export const authModule: OpenLeafModule = {
           ? await verifyPassword(req.body.password, user.password_hash)
           : (await hashPassword(req.body.password), false);
         if (!user || !ok) throw unauthorized('Wrong email or password.', 'invalid_credentials');
-        const session = await issueSession(db, user.id, config.sessionTtlDays);
+        const session = await issueSession(db, user.id, config.sessionTtlDays, config.sessionMaxDays);
         return { user: publicUser(user), ...session };
       },
     );
@@ -345,7 +358,7 @@ export const authModule: OpenLeafModule = {
 
           const known = await q.query<UserRow>('SELECT * FROM users WHERE firebase_uid = $1', [identity.uid]);
           if (known.rows[0]) {
-            return { user: known.rows[0], created: false, session: await issueSession(q, known.rows[0].id, config.sessionTtlDays) };
+            return { user: known.rows[0], created: false, session: await issueSession(q, known.rows[0].id, config.sessionTtlDays, config.sessionMaxDays) };
           }
 
           // An account made earlier with a password, now signing in with the same (verified) address.
@@ -358,7 +371,7 @@ export const authModule: OpenLeafModule = {
               'UPDATE users SET firebase_uid = $2, password_hash = NULL, updated_at = now() WHERE id = $1 RETURNING *',
               [byEmail.rows[0].id, identity.uid],
             );
-            return { user: linked.rows[0]!, created: false, session: await issueSession(q, linked.rows[0]!.id, config.sessionTtlDays) };
+            return { user: linked.rows[0]!, created: false, session: await issueSession(q, linked.rows[0]!.id, config.sessionTtlDays, config.sessionMaxDays) };
           }
 
           const count = await q.query<{ n: number }>('SELECT count(*)::int AS n FROM users');
@@ -371,7 +384,7 @@ export const authModule: OpenLeafModule = {
             [identity.email, identity.uid, identity.name, hasUsers ? 'member' : 'owner'],
           );
           const user = inserted.rows[0]!;
-          return { user, created: true, session: await issueSession(q, user.id, config.sessionTtlDays) };
+          return { user, created: true, session: await issueSession(q, user.id, config.sessionTtlDays, config.sessionMaxDays) };
         });
 
         if (result.created) {
@@ -394,6 +407,53 @@ export const authModule: OpenLeafModule = {
         if (user.tokenKind === 'session') {
           await db.query('DELETE FROM auth_tokens WHERE id = $1', [user.tokenId]);
         }
+        reply.code(204);
+      },
+    );
+
+    app.get(
+      '/api/auth/sessions',
+      { ...auth, schema: { tags: [TAG], summary: 'Where you are signed in: your sessions', security: secured } },
+      async (req) => {
+        const user = currentUser(req);
+        const res = await db.query<{ id: string; created_at: Date; last_used_at: Date | null; expires_at: Date | null }>(
+          `SELECT id, created_at, last_used_at, expires_at FROM auth_tokens
+            WHERE user_id = $1 AND kind = 'session' AND (expires_at IS NULL OR expires_at > now())
+            ORDER BY created_at DESC`,
+          [user.id],
+        );
+        return {
+          sessions: res.rows.map((t) => ({
+            id: t.id,
+            createdAt: t.created_at,
+            lastUsedAt: t.last_used_at,
+            expiresAt: t.expires_at,
+            current: t.id === user.tokenId,
+          })),
+        };
+      },
+    );
+
+    app.post(
+      '/api/auth/logout-all',
+      {
+        ...auth,
+        schema: {
+          tags: [TAG],
+          summary: 'Sign out everywhere: end every session of this account',
+          description:
+            'Ends all sessions, this one included, on every browser and device. Personal API tokens are ' +
+            'left alone unless `?apiTokens=true`.',
+          security: secured,
+          querystring: Type.Object({ apiTokens: Type.Optional(Type.Boolean()) }),
+        },
+      },
+      async (req, reply) => {
+        const user = currentUser(req);
+        await db.query(
+          `DELETE FROM auth_tokens WHERE user_id = $1 AND (kind = 'session' OR $2::boolean)`,
+          [user.id, Boolean(req.query.apiTokens)],
+        );
         reply.code(204);
       },
     );
@@ -564,5 +624,10 @@ export const authModule: OpenLeafModule = {
         reply.code(204);
       },
     );
+  },
+
+  async onReady(root, { db }) {
+    const gone = await db.query('DELETE FROM auth_tokens WHERE expires_at < now()');
+    if (gone.rowCount) root.log.info({ removed: gone.rowCount }, 'removed expired sessions and tokens');
   },
 };

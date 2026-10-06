@@ -48,7 +48,7 @@ Other commands:
 | Sign in | Signs in the way the service says it does: with **Continue with Google** when the service uses Firebase Authentication (it then keeps no password), otherwise with an email and password. A new account is asked for the invite code if the service wants one. |
 | Library | Every project with the state of its last compile, its page count and its last note. New project (blank or from a template), import a zip, rename, duplicate, download, archive, trash, delete for good. |
 | Workspace | The editor. See below. |
-| Modules | Which panes are out, the scholia margin, compile-after-save, the theme (Daylight, Lamplight, or follow the computer), the service's address and engines, a backup of everything, sign out. |
+| Modules | Which panes are out, the scholia margin, compile-after-save, the theme (Daylight, Lamplight, or follow the computer), the service's address and engines, linking a GitHub account (by a one-time code), a backup of everything, sign out, and sign out everywhere. |
 
 The workspace:
 
@@ -70,10 +70,12 @@ The workspace:
   `Ctrl K`. Files: new file or folder, upload, rename or move, set as root, download, delete (asked
   in place). History: save a version, see what changed since any version, read a file's changes
   line by line, restore.
+- **GitHub** — at the top of the History pane once an account is linked in Modules: give the project
+  a repository of its own, then "Save to GitHub" makes one commit of what is here now.
 - **`Ctrl K`** — commands, files, sections and labels in one field. **`Ctrl Enter`** compiles;
   `Ctrl Shift Enter` compiles from scratch.
 
-Not built yet: Counsel (the model that reads along), GitHub sync, real-time collaboration,
+Not built yet: Counsel (the model that reads along), pulling changes back from GitHub, real-time collaboration,
 selecting text in the proof, dragging the divider between source and proof, a phone layout.
 
 ## How it is put together
@@ -108,7 +110,12 @@ Things worth knowing before changing it:
   set in place.
 - **Preferences** (panes, theme, compile-after-save) are kept with the account under `openleaf` in
   the service's free-form settings, and mirrored in the browser's local storage.
-- **The session token** is kept in the browser's local storage until you sign out.
+- **The session token** is kept in the browser's local storage until you sign out. Modules has
+  "Sign out everywhere" for the case where a session was left open somewhere.
+- **Files open safely.** A picture or a PDF is shown by the browser as the type its name says;
+  anything else (SVG and HTML included) is downloaded, never opened as a page of this app.
+- **The built site carries a Content-Security-Policy** (`vite.config.ts`): script only from the
+  site and Google's sign-in loader, connections only to the API and Google's sign-in service.
 - **Google sign-in** is in `src/lib/google.ts`, loaded only when the service asks for it. Firebase's own
   sign-in is held in memory and dropped once its token has been handed to the service, so the only
   thing kept in the browser is OpenLeaf's session token.

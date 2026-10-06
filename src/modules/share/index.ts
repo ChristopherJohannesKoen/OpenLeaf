@@ -81,7 +81,9 @@ export const shareModule: OpenLeafModule = {
         schema: {
           tags: [TAG],
           summary: 'Create a read-only link to the latest PDF',
-          description: 'The link is shown only once. Anyone who has it can view the PDF until it expires or is revoked.',
+          description:
+            'The link is shown only once. Anyone who has it can view the PDF until it expires or is revoked. ' +
+            'Without `expiresInDays` the link gets the instance default (30 days unless configured otherwise).',
           security: secured,
           params: ProjectParams,
           body: Type.Optional(
@@ -101,7 +103,13 @@ export const shareModule: OpenLeafModule = {
            VALUES ($1, $2, $3, $4,
                    CASE WHEN $5::int IS NULL THEN NULL ELSE now() + make_interval(days => $5::int) END)
            RETURNING *`,
-          [project.id, user.id, (req.body?.label ?? '').trim(), hashToken(token), req.body?.expiresInDays ?? null],
+          [
+            project.id,
+            user.id,
+            (req.body?.label ?? '').trim(),
+            hashToken(token),
+            req.body?.expiresInDays ?? (config.shareLinkDefaultDays > 0 ? config.shareLinkDefaultDays : null),
+          ],
         );
         reply.code(201);
         return {

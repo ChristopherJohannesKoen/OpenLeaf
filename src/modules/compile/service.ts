@@ -10,6 +10,7 @@ import { sourceFingerprint, type ProjectRow } from '../projects/store.js';
 import { engineStatuses, getEngine, listEngines, type Engine } from './engines.js';
 import { parseBibLog, parseLatexLog, summarize, type Diagnostic } from './log-parser.js';
 import { run } from './runner.js';
+import { describeIsolation, detectIsolation, isolate, NO_ISOLATION, type Isolation } from './sandbox.js';
 import { removeWorkspace, syncWorkspace, workspaceFor, type Workspace } from './workspace.js';
 
 export type CompileStatus = 'queued' | 'running' | 'success' | 'failure' | 'timeout' | 'error';
@@ -136,6 +137,8 @@ export class CompileService {
   private readonly projectLocks = new KeyedMutex();
   private readonly inflight = new Map<string, { key: string; compileId: string; promise: Promise<void> }>();
   selfTests: SelfTestResult[] = [];
+  /** How compiles are kept apart from the service on this host; set by `prepareIsolation`. */
+  isolation: Isolation = NO_ISOLATION;
 
   constructor(
     private readonly db: Db,
@@ -148,6 +151,20 @@ export class CompileService {
 
   workspace(projectId: string): Workspace {
     return workspaceFor(this.config.compile.dir, projectId);
+  }
+
+  /** Find out what isolation this host allows. Called once, before the first compile. */
+  async prepareIsolation(): Promise<Isolation> {
+    this.isolation = await detectIsolation(this.config.compile.isolation);
+    return this.isolation;
+  }
+
+  describeIsolation(): string {
+    return describeIsolation(this.isolation);
+  }
+
+  private wrap(cmd: string, args: string[], iso: Isolation = this.isolation) {
+    return isolate(cmd, args, iso, { memoryMb: this.config.compile.memoryMb, maxFileMb: this.config.compile.maxFileMb });
   }
 
   /** A deliberately small environment: the child never sees DATABASE_URL or other secrets. */
@@ -186,6 +203,9 @@ export class CompileService {
         'unknown_engine',
       );
     }
+    if (this.config.compile.engines && !this.config.compile.engines.includes(id)) {
+      throw badRequest(`The ${engine.label} engine is switched off on this server.`, 'engine_disabled');
+    }
     const status = (await engineStatuses()).find((s) => s.id === id);
     if (!status?.available) {
       throw unavailable(
@@ -198,6 +218,12 @@ export class CompileService {
 
   /** Queue a compile (or reuse an identical finished/running one). */
   async request(project: ProjectRow, userId: string, opts: CompileOptions = {}): Promise<CompileTicket> {
+    if (this.config.compile.isolation === 'required' && !this.isolation.namespaces) {
+      throw unavailable(
+        'This server is set to compile only in isolation, and the host does not allow it.',
+        'isolation_unavailable',
+      );
+    }
     const engine = await this.resolveEngine(opts.engine ?? project.engine);
     const mainFile = normalizePath(opts.mainFile ?? project.main_file, 'main file');
     const exists = await this.db.query<{ kind: string }>(
@@ -276,7 +302,8 @@ export class CompileService {
         stopOnFirstError: options.stopOnFirstError,
         allowRc: this.config.compile.allowLatexmkrc,
       });
-      const res = await run(cmd, args, {
+      const wrapped = this.wrap(cmd, args);
+      const res = await run(wrapped.cmd, wrapped.args, {
         cwd: ws.src,
         env: await this.texEnv(),
         timeoutMs: this.config.compile.timeoutMs,
@@ -502,12 +529,34 @@ export class CompileService {
         });
         const release = await this.slots.acquire();
         let res;
+        let pdf: Buffer | null;
         try {
-          res = await run(cmd, args, { cwd: dir, env: await this.texEnv(), timeoutMs: this.config.compile.timeoutMs });
+          const attempt = async (iso: Isolation) => {
+            const wrapped = this.wrap(cmd, args, iso);
+            const r = await run(wrapped.cmd, wrapped.args, { cwd: dir, env: await this.texEnv(), timeoutMs: this.config.compile.timeoutMs });
+            const out = await fsReadFile(path.join(dir, 'selftest.pdf')).catch(() => null);
+            return { r, out, ok: r.exitCode === 0 && out !== null && out.byteLength > 0 };
+          };
+          let first = await attempt(this.isolation);
+          // A host can accept the isolation and still break TeX inside it. If the same document
+          // compiles without it, carry on without it (unless isolation is required) and say so.
+          if (!first.ok && (this.isolation.namespaces || this.isolation.limits) && this.config.compile.isolation !== 'required') {
+            await rm(path.join(dir, 'selftest.pdf'), { force: true });
+            const plain = await attempt(NO_ISOLATION);
+            if (plain.ok) {
+              this.log.error(
+                { engine: engineId, was: describeIsolation(this.isolation), output: first.r.output.slice(-400) },
+                'compiles fail inside the isolation on this host; continuing without it',
+              );
+              this.isolation = NO_ISOLATION;
+              first = plain;
+            }
+          }
+          res = first.r;
+          pdf = first.out;
         } finally {
           release();
         }
-        const pdf = await fsReadFile(path.join(dir, 'selftest.pdf')).catch(() => null);
         await rm(dir, { recursive: true, force: true });
         if (res.exitCode === 0 && pdf && pdf.byteLength > 0) {
           results.push(result(true, 'Compiled a test document successfully.', pdf.byteLength));

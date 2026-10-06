@@ -1,4 +1,4 @@
-import { unzipSync, zipSync, type Zippable } from 'fflate';
+import { Unzip, UnzipInflate, zipSync, type Zippable } from 'fflate';
 import { badRequest, tooLarge } from '../../core/errors.js';
 import { looksLikeText, normalizePath } from '../../core/paths.js';
 import type { FileEntry, FileRow, Limits } from '../projects/store.js';
@@ -33,34 +33,89 @@ export interface ZipImport {
   skipped: { path: string; reason: string }[];
 }
 
-/** Read a zip archive into project file entries, enforcing size and count limits. */
-export function readZip(archive: Uint8Array, limits: Limits): ZipImport {
+/** Thrown from inside the unpacking callbacks to stop at once. */
+class Stop extends Error {}
+
+/**
+ * Unpack an archive while counting the bytes that actually come out, and stop the moment they
+ * pass the limit. The sizes an archive declares are not believed: a small file can claim to be
+ * small and still unpack to gigabytes. The archive is fed in small slices so that no single
+ * step can produce more than a few megabytes before the count is checked.
+ */
+function unpack(archive: Uint8Array, limits: Limits): Record<string, Uint8Array> {
+  const out: Record<string, Uint8Array> = {};
   let count = 0;
-  let declared = 0;
-  let unzipped: Record<string, Uint8Array>;
-  try {
-    unzipped = unzipSync(archive, {
-      filter(file) {
-        if (file.name.endsWith('/')) return true;
-        if (IGNORED.some((re) => re.test(file.name))) return false;
-        count += 1;
-        declared += file.originalSize;
-        if (count > MAX_ZIP_ENTRIES) {
-          throw tooLarge(`Zip archives are limited to ${MAX_ZIP_ENTRIES} files.`, 'zip_too_many_files');
-        }
-        if (declared > limits.maxProjectBytes) {
-          throw tooLarge(
-            `The archive unpacks to more than the ${Math.round(limits.maxProjectBytes / (1024 * 1024))} MB project limit.`,
-            'project_too_large',
+  let total = 0;
+  // The first reason to stop is the one reported, however the library passes the error on.
+  let reason: Error | null = null;
+  const stop = (why: Error): never => {
+    reason ??= why;
+    throw new Stop();
+  };
+  const unreadable = () => badRequest('That file is not a readable zip archive.', 'invalid_zip');
+
+  const unzipper = new Unzip();
+  unzipper.register(UnzipInflate);
+  unzipper.onfile = (file) => {
+    if (file.name.endsWith('/')) {
+      out[file.name] = new Uint8Array(0);
+      return;
+    }
+    if (IGNORED.some((re) => re.test(file.name))) return; // never started, so never unpacked
+    count += 1;
+    if (count > MAX_ZIP_ENTRIES) {
+      stop(tooLarge(`Zip archives are limited to ${MAX_ZIP_ENTRIES} files.`, 'zip_too_many_files'));
+    }
+    const parts: Uint8Array[] = [];
+    let size = 0;
+    file.ondata = (err, chunk, final) => {
+      if (err) stop(unreadable());
+      if (chunk.byteLength) {
+        size += chunk.byteLength;
+        total += chunk.byteLength;
+        if (total > limits.maxProjectBytes) {
+          stop(
+            tooLarge(
+              `The archive unpacks to more than the ${Math.round(limits.maxProjectBytes / (1024 * 1024))} MB project limit.`,
+              'project_too_large',
+            ),
           );
         }
-        return true;
-      },
-    });
-  } catch (err) {
-    if ((err as { statusCode?: number }).statusCode) throw err;
-    throw badRequest('That file is not a readable zip archive.', 'invalid_zip');
+        parts.push(chunk);
+      }
+      if (final) {
+        const whole = new Uint8Array(size);
+        let at = 0;
+        for (const part of parts) {
+          whole.set(part, at);
+          at += part.byteLength;
+        }
+        out[file.name] = whole;
+      }
+    };
+    file.start();
+  };
+
+  const SLICE = 16 * 1024;
+  try {
+    for (let at = 0; at < archive.byteLength; at += SLICE) {
+      const last = at + SLICE >= archive.byteLength;
+      unzipper.push(archive.subarray(at, Math.min(at + SLICE, archive.byteLength)), last);
+    }
+    if (archive.byteLength === 0) unzipper.push(new Uint8Array(0), true);
+  } catch {
+    throw reason ?? unreadable();
   }
+  if (reason) throw reason;
+  return out;
+}
+
+/** Read a zip archive into project file entries, enforcing size and count limits. */
+export function readZip(archive: Uint8Array, limits: Limits): ZipImport {
+  // "PK\x03\x04" (a file) or "PK\x05\x06" (an empty archive): anything else is not a zip.
+  const magic = archive.byteLength >= 4 && archive[0] === 0x50 && archive[1] === 0x4b;
+  if (!magic) throw badRequest('That file is not a readable zip archive.', 'invalid_zip');
+  const unzipped = unpack(archive, limits);
 
   let names = Object.keys(unzipped).filter((n) => !IGNORED.some((re) => re.test(n)));
 

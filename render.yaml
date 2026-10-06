@@ -40,6 +40,7 @@ services:
       # Whoever knows this code can create an account. Read it in the dashboard after the first deploy.
       - key: INVITE_CODE
         generateValue: true
+      # Change to `closed` once your own account exists; back to `invite` to add someone.
       - key: REGISTRATION
         value: invite
       - key: DEFAULT_ENGINE
@@ -56,6 +57,15 @@ services:
         sync: false
       - key: FIREBASE_API_KEY
         sync: false
+      # Saving projects to GitHub: the client id of a GitHub OAuth app with device flow enabled,
+      # and a key that encrypts the stored tokens.
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: SECRETS_KEY
+        generateValue: true
+      # Render's edge adds proxies in front of the service; see TRUST_PROXY in .env.example.
+      - key: TRUST_PROXY
+        sync: false
       # Which web pages may call the API from a browser: the front end below.
       - key: CORS_ORIGINS
         value: https://openleaf-cw3y.onrender.com
@@ -71,6 +81,20 @@ services:
       paths:
         - web/**
     headers:
+      # The page's own Content-Security-Policy is built into index.html; these are the parts
+      # that only a response header can say.
+      - path: /*
+        name: Content-Security-Policy
+        value: frame-ancestors 'none'
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()
       # Built files carry a hash of their content in their name, so they can be kept for good.
       - path: /assets/*
         name: Cache-Control

@@ -3,10 +3,12 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Api, Change, Version } from '../api/types';
 import { Button, Confirm, cx, Field, Fig, Mark, Pane } from '../ds';
 import { clock, when } from '../lib/format';
+import { GithubBlock } from './GithubBlock';
 
 interface Props {
   api: Api;
   projectId: string;
+  projectName: string;
   /** Increases whenever the project's files change, so the comparison is made again. */
   tick: number;
   onDiff: (version: Version, path: string) => void;
@@ -18,7 +20,7 @@ interface Props {
 const LETTER: Record<Change['status'], 'A' | 'M' | 'D'> = { added: 'A', modified: 'M', removed: 'D' };
 const SAID: Record<Change['status'], string> = { added: 'added since', modified: 'changed since', removed: 'removed since' };
 
-export function HistoryPane({ api, projectId, tick, onDiff, beforeAction, onRestored }: Props) {
+export function HistoryPane({ api, projectId, projectName, tick, onDiff, beforeAction, onRestored }: Props) {
   const [versions, setVersions] = useState<Version[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [changes, setChanges] = useState<Change[] | null>(null);
@@ -89,6 +91,8 @@ export function HistoryPane({ api, projectId, tick, onDiff, beforeAction, onRest
             <Button type="submit" disabled={busy}>Save version</Button>
           </div>
         </form>
+
+        <GithubBlock api={api} projectId={projectId} projectName={projectName} tick={tick} beforeAction={beforeAction} />
 
         {restoring && (
           <div className="ol-pane__ask">

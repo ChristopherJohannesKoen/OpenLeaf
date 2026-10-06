@@ -40,6 +40,11 @@ button.ol-siglum--off:hover { border-style: solid; }
 .ol-pane__ask { padding: var(--space-half); border-bottom: 1px solid var(--rule); display: grid; gap: var(--space-half); }
 .ol-pane__ask-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-half); }
 .ol-pane__ask .ol-confirm { padding: var(--space-half); }
+.ol-github__line { color: var(--ink-2); font-size: 14px; overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-quarter) var(--space-half); }
+.ol-github__form { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-half); min-width: 0; }
+.ol-github__form .ol-pane__ask-actions, .ol-github__options { justify-content: space-between; flex-wrap: wrap; row-gap: var(--space-quarter); }
+.ol-github__private { display: inline-flex; align-items: center; gap: var(--space-half); color: var(--ink-2); font-size: 14px; }
+.ol-github__code { display: block; margin-top: var(--space-quarter); font-size: 24px; letter-spacing: 0.08em; white-space: nowrap; }
 .ol-pane__ask .ol-confirm__words { flex-basis: 100%; }
 .ol-pane__ask .ol-confirm__question { font-size: 14px; overflow-wrap: anywhere; }
 

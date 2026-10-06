@@ -1,4 +1,6 @@
 import type { OpenLeafModule } from '../../core/modules.js';
+import { forbidden } from '../../core/errors.js';
+import { currentUser, secured } from '../../core/http.js';
 import { VERSION } from '../../version.js';
 
 const TAG = 'System';
@@ -11,12 +13,12 @@ export const systemModule: OpenLeafModule = {
   dependsOn: ['auth'],
 
   register(app, { db, config, modules, info }) {
+    const auth = { onRequest: [app.authenticate] };
+
     app.get('/', { schema: { hide: true } }, async () => ({
       name: 'OpenLeaf',
-      version: VERSION,
       docs: '/docs',
       openapi: '/docs/json',
-      info: '/api/system/info',
       health: '/healthz',
     }));
 
@@ -25,12 +27,14 @@ export const systemModule: OpenLeafModule = {
       '/healthz',
       { schema: { tags: [TAG], summary: 'Health check' }, logLevel: 'warn' },
       async (_req, reply) => {
+        // Public, so it says only whether the service is up; the reason for a failure goes to the log.
         try {
           await db.query('SELECT 1');
-          return { status: 'ok', version: VERSION, uptimeSeconds: Math.round((Date.now() - startedAt) / 1000) };
+          return { status: 'ok' };
         } catch (err) {
+          app.log.error({ err }, 'health check failed');
           reply.code(503);
-          return { status: 'unavailable', version: VERSION, error: `database: ${(err as Error).message}` };
+          return { status: 'unavailable' };
         }
       },
     );
@@ -38,9 +42,11 @@ export const systemModule: OpenLeafModule = {
     app.get(
       '/api/system/info',
       {
+        ...auth,
         schema: {
           tags: [TAG],
           summary: 'What this instance is running: version, modules, engines, limits',
+          security: secured,
         },
       },
       async () => {
@@ -68,6 +74,38 @@ export const systemModule: OpenLeafModule = {
             maxTextFileBytes: config.maxTextFileBytes,
           },
           ...details,
+        };
+      },
+    );
+
+    app.get(
+      '/api/system/request',
+      {
+        ...auth,
+        schema: {
+          tags: [TAG],
+          summary: 'Owner only: how this request reached the service',
+          description:
+            'For setting `TRUST_PROXY` on a new host: the address the service takes the caller to have, ' +
+            'and the forwarding headers it was sent. `address` should be your own public address, and ' +
+            'should stay the same when you add an `X-Forwarded-For` header of your own to the request.',
+          security: secured,
+        },
+      },
+      async (req) => {
+        if (currentUser(req).role !== 'owner') throw forbidden('Only the owner can see this.');
+        const header = (name: string) => {
+          const v = req.headers[name];
+          return v === undefined ? null : Array.isArray(v) ? v.join(', ') : v;
+        };
+        return {
+          address: req.ip,
+          chain: req.ips ?? [req.ip],
+          trustProxy: config.trustProxy,
+          forwardedFor: header('x-forwarded-for'),
+          cfConnectingIp: header('cf-connecting-ip'),
+          trueClientIp: header('true-client-ip'),
+          forwardedProto: header('x-forwarded-proto'),
         };
       },
     );

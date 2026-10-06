@@ -92,17 +92,26 @@ export const compileModule: OpenLeafModule = {
       await removeWorkspace(workspaceFor(config.compile.dir, projectId));
     });
 
+    const allowed = (statuses: Awaited<ReturnType<typeof engineStatuses>>) =>
+      config.compile.engines ? statuses.filter((e) => config.compile.engines!.includes(e.id)) : statuses;
+
     info.set('compile', async () => ({
       defaultEngine: config.compile.defaultEngine,
       timeoutSeconds: Math.round(config.compile.timeoutMs / 1000),
-      engines: await engineStatuses(),
+      engines: allowed(await engineStatuses()),
       selfTests: compiler.selfTests,
+      isolation: {
+        namespaces: compiler.isolation.namespaces,
+        limits: compiler.isolation.limits,
+        noNewPrivileges: compiler.isolation.noNewPrivileges,
+        summary: compiler.describeIsolation(),
+      },
     }));
 
     app.get(
       '/api/compile/engines',
       { ...auth, schema: { tags: [TAG], summary: 'The LaTeX engines this server can run', security: secured } },
-      async () => ({ defaultEngine: config.compile.defaultEngine, engines: await engineStatuses() }),
+      async () => ({ defaultEngine: config.compile.defaultEngine, engines: allowed(await engineStatuses()) }),
     );
 
     app.post(
@@ -355,6 +364,9 @@ export const compileModule: OpenLeafModule = {
     if (!compiler) return;
     const recovered = await compiler.recoverInterrupted();
     if (recovered) root.log.info({ recovered }, 'closed out compiles interrupted by a restart');
+
+    const isolation = await compiler.prepareIsolation();
+    root.log.info({ isolation }, `compile isolation: ${compiler.describeIsolation()}`);
 
     const engines = await engineStatuses(true);
     root.log.info(

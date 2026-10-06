@@ -148,11 +148,17 @@ export async function readIfFresh(file: string, since: number): Promise<Buffer |
 async function whatWentWrong(dir: string, jobName: string, output: string): Promise<string> {
   const log = (await readIfFresh(path.join(dir, `${jobName}.log`), 0))?.toString('utf8') ?? '';
   const telling = /^!|error|fatal|cannot|can't|could not|unable|denied|not found|not loadable|unrecognized|no such|failed/i;
-  const pick = (text: string) =>
-    text
-      .split('\n')
-      .map((line) => line.trimEnd())
-      .filter((line) => line && telling.test(line) && !/^Latexmk:|rerun latexmk|force complete|error summary/.test(line));
+  const pick = (text: string) => {
+    const all = text.split('\n').map((line) => line.trimEnd());
+    const kept: string[] = [];
+    all.forEach((line, i) => {
+      if (!line || !telling.test(line) || /^Latexmk:|rerun latexmk|force complete|error summary/.test(line)) return;
+      kept.push(line);
+      // What follows "Error message:" is the message.
+      if (/error message:?\s*$/i.test(line)) kept.push(...all.slice(i + 1, i + 5).filter(Boolean));
+    });
+    return kept;
+  };
   const lines = [...new Set([...pick(log), ...pick(output)])].slice(0, 14);
   const said = lines.length ? lines : output.trim().split('\n').slice(-8);
   return said.join(' | ').slice(0, 1600);
@@ -232,7 +238,11 @@ export class CompileService {
   }
 
   /** A deliberately small environment: the child never sees DATABASE_URL or other secrets. */
-  private async texEnv(): Promise<NodeJS.ProcessEnv> {
+  private async texEnv(engine?: Engine): Promise<NodeJS.ProcessEnv> {
+    return { ...(await this.baseEnv()), ...(engine?.env ?? {}) };
+  }
+
+  private async baseEnv(): Promise<NodeJS.ProcessEnv> {
     const { home, texmfVar, tmp } = this.texDirs();
     await Promise.all([home, texmfVar, tmp].map((d) => mkdir(d, { recursive: true })));
     return {
@@ -373,7 +383,7 @@ export class CompileService {
       const wrapped = this.wrap(cmd, args, ws.src);
       const res = await run(wrapped.cmd, wrapped.args, {
         cwd: ws.src,
-        env: await this.texEnv(),
+        env: await this.texEnv(engine),
         timeoutMs: this.config.compile.timeoutMs,
       });
 
@@ -641,7 +651,7 @@ export class CompileService {
             if (left !== 'selftest.tex') await rm(path.join(dir, left), { recursive: true, force: true });
           }
           const wrapped = this.wrap(cmd, args, dir, iso);
-          const r = await run(wrapped.cmd, wrapped.args, { cwd: dir, env: await this.texEnv(), timeoutMs: this.config.compile.timeoutMs });
+          const r = await run(wrapped.cmd, wrapped.args, { cwd: dir, env: await this.texEnv(engine), timeoutMs: this.config.compile.timeoutMs });
           const out = await readIfFresh(path.join(dir, 'selftest.pdf'), 0);
           const ok = r.exitCode === 0 && out !== null && out.byteLength > 0;
           return { r, out, ok, why: ok ? '' : await whatWentWrong(dir, 'selftest', r.output) };

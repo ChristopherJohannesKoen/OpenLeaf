@@ -24,6 +24,8 @@ export interface Engine {
   binaries: string[];
   /** A command whose first output line identifies the version. */
   versionCommand?: [string, ...string[]];
+  /** Settings this engine needs on top of the environment every compile gets. */
+  env?: Record<string, string>;
   command(inv: EngineInvocation): { cmd: string; args: string[] };
 }
 
@@ -33,6 +35,7 @@ function latexmkEngine(
   description: string,
   modeFlag: string,
   binary: string,
+  env?: Record<string, string>,
 ): Engine {
   return {
     id,
@@ -40,6 +43,7 @@ function latexmkEngine(
     description,
     binaries: ['latexmk', binary],
     versionCommand: [binary, '--version'],
+    ...(env ? { env } : {}),
     command(inv) {
       return {
         cmd: 'latexmk',
@@ -80,7 +84,15 @@ registerEngine(
   latexmkEngine('xelatex', 'XeLaTeX', 'Unicode and system/OpenType fonts via fontspec.', '-xelatex', 'xelatex'),
 );
 registerEngine(
-  latexmkEngine('lualatex', 'LuaLaTeX', 'Unicode, OpenType fonts and Lua scripting.', '-lualatex', 'lualatex'),
+  latexmkEngine('lualatex', 'LuaLaTeX', 'Unicode, OpenType fonts and Lua scripting.', '-lualatex', 'lualatex', {
+    // Current LuaTeX applies `openin_any` to files that Lua code opens, and its own font loader
+    // opens its data by full path (luaotfload reads the Unicode script tables that way). With
+    // the paranoid setting every compile otherwise gets ("p": no absolute paths) LuaLaTeX
+    // cannot load a font at all. "r" still refuses dot files. What a LuaLaTeX document can
+    // read is then a matter for the file rules of the isolation (see sandbox.ts), which is
+    // where a language as open as Lua has to be held in any case.
+    openin_any: 'r',
+  }),
 );
 
 export interface EngineStatus {

@@ -202,11 +202,11 @@ the site's address, so only that site may call it from a browser. If either
 address changes (a custom domain, a renamed service), change the matching
 variable and redeploy.
 
-Both services are set to deploy on every push to `main`, but Render only hears
-about a push once the Render account is connected to GitHub with access to this
-repository (Render → Account settings → Git providers). Until then, deploy by
-hand after a push: **Manual Deploy → Deploy latest commit** on each service.
-A private repository needs the same connection before Render can read it at all.
+Both services deploy on every push to `main`. That needs Render's GitHub app
+installed with access to this repository (GitHub → Settings → Applications →
+Render), and each service's build source chosen through it (service → Settings
+→ Build → Source). Without it, deploy by hand after a push: **Manual Deploy →
+Deploy latest commit** on each service.
 
 **The database.** OpenLeaf needs a PostgreSQL address and nothing else, so the
 database can live anywhere. Render's own free database is deleted 30 days after
